@@ -54,8 +54,6 @@ _HINTS: tuple[tuple[str, tuple[str, ...]], ...] = (
     ("sum", ("사용량", "합계", "금액", "요금", "수량", "발생", "생산", "판매", "건수", "실적")),
 )
 
-_RE_NUMBER = re.compile(r"^-?[\d,]*\.?\d+$")
-
 
 # --------------------------------------------------------------------------- #
 # 설정 / 결과
@@ -312,34 +310,61 @@ def _apply(method: str, raw_values: Iterable[Any]) -> Any:
     )
 
 
+#: 'HH:MM' 또는 'HH:MM:SS' 형태의 경과시간 문자열. '가동시간' 같은 필드에
+#: 사람이 직접 이렇게 입력하는 경우가 흔하다.
+_RE_DURATION = re.compile(r"^\s*(\d{1,4}):([0-5]?\d)(?::([0-5]?\d))?\s*$")
+
+#: 한글 음절 (가~힣). '1호기', '2동', '3층' 처럼 숫자가 섞인 이름표를 걸러내는 데 쓴다.
+_RE_HANGUL = re.compile(r"[가-힣]")
+
+
 def to_number(value: Any) -> Optional[float]:
-    """엑셀 셀 값을 숫자로 바꾼다. 숫자가 아니면 ``None``."""
+    """엑셀 셀 값을 숫자로 바꾼다. 숫자가 아니면 ``None``.
+
+    '가동시간' 같은 필드는 엑셀에서 ``[h]:mm`` / ``h:mm`` 서식으로 자주
+    입력된다. 이런 셀은 openpyxl 이 ``timedelta`` 나 ``time`` 으로 돌려주는데,
+    문자열로 바꿔 숫자만 뽑으면(``8:30`` -> ``830``) 완전히 틀린 값이 되므로
+    반드시 먼저 걸러서 '시간(hour) 단위 소수'로 변환한다.
+
+    ``1호기``, ``2동`` 처럼 숫자와 한글이 붙은 이름표는 숫자로 보지 않는다.
+    안 그러면 '숫자만 추출' 로직이 이름표에서 엉뚱한 숫자를 뽑아내(``1호기`` ->
+    ``1``) 라벨 컬럼을 실수로 합산해 버리는 사고가 난다.
+    """
     if value is None or isinstance(value, bool):
         return None
     if isinstance(value, (int, float)):
         number = float(value)
         return None if number != number else number  # NaN 제외
+    if isinstance(value, _dt.timedelta):
+        return value.total_seconds() / 3600.0
+    if isinstance(value, _dt.time):
+        return value.hour + value.minute / 60.0 + value.second / 3600.0
     if isinstance(value, _dt.date):
         return None
     text = str(value).strip()
     if not text:
         return None
+
+    duration = _RE_DURATION.match(text)
+    if duration:
+        hours = int(duration.group(1))
+        minutes = int(duration.group(2))
+        seconds = int(duration.group(3) or 0)
+        return hours + minutes / 60.0 + seconds / 3600.0
+
+    if _RE_HANGUL.search(text):
+        return None
+
     # '1,234', '1 234', '123 kWh', '45%' 같은 표기를 흡수한다
     text = text.replace(",", "").replace(" ", "")
     percent = text.endswith("%")
     if percent:
         text = text[:-1]
     text = re.sub(r"[^\d.\-+eE]", "", text)
-    if not text or not _RE_NUMBER.match(text.replace("+", "")):
-        try:
-            number = float(text)
-        except ValueError:
-            return None
-    else:
-        try:
-            number = float(text)
-        except ValueError:
-            return None
+    try:
+        number = float(text)
+    except ValueError:
+        return None
     if percent:
         number /= 100.0
     return number

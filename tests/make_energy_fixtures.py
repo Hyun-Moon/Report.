@@ -153,6 +153,105 @@ def source_e7_derived_intensity_ready() -> str:
     return _save_source(wb, "E7_원단위_사전계산.xlsx")
 
 
+def source_c1_chillers_wide() -> str:
+    """대형빌딩 냉동기 3대의 일별 가동시간·전력사용량 (넓은 형식, 설비별 컬럼 분리)."""
+    wb = Workbook()
+    ws = wb.active
+    ws.title = "냉동기일지"
+    ws.append(
+        [
+            "일자",
+            "1호기_가동시간", "1호기_전력사용량",
+            "2호기_가동시간", "2호기_전력사용량",
+            "3호기_가동시간", "3호기_전력사용량",
+        ]
+    )
+    for day in range(1, 32):  # 2026-07, 냉방 성수기
+        date = _dt.date(2026, 7, day)
+        ws.append(
+            [
+                date,
+                8.5, 620 + day,
+                7.0, 510 + day,
+                6.5, 480 + day,
+            ]
+        )
+    return _save_source(wb, "C1_냉동기3대_넓은형식.xlsx")
+
+
+def source_c2_chillers_long() -> str:
+    """냉동기별 데이터가 세로로 섞인 표 (한 파일에 여러 호기가 나열된 경우).
+
+    이 프로그램의 월단위 집계는 '같은 날짜의 모든 행'을 그냥 더하기 때문에,
+    이렇게 넣으면 호기 구분 없이 전체 냉동기 값이 합쳐진다. 설비별로 나눈
+    보고서가 필요하면 원본을 설비별로 미리 나누거나(시트/파일 분리) C1 처럼
+    넓은 형식으로 바꿔야 한다는 것을 보여주는 대조 케이스다.
+    """
+    wb = Workbook()
+    ws = wb.active
+    ws.title = "냉동기일지"
+    ws.append(["일자", "호기명", "가동시간", "전력사용량"])
+    for day in range(1, 6):
+        date = _dt.date(2026, 8, day)
+        ws.append([date, "1호기", 8.5, 620 + day])
+        ws.append([date, "2호기", 7.0, 510 + day])
+        ws.append([date, "3호기", 6.5, 480 + day])
+    return _save_source(wb, "C2_냉동기_세로형식.xlsx")
+
+
+def source_c3_chiller_time_format() -> str:
+    """가동시간이 엑셀 시간 서식([h]:mm, h:mm)과 'HH:MM' 문자열로 뒤섞인 경우."""
+    from openpyxl.worksheet.worksheet import Worksheet
+
+    wb = Workbook()
+    ws: Worksheet = wb.active
+    ws.title = "가동시간"
+    ws.append(["일자", "가동시간", "전력사용량"])
+
+    # 1) 소수로 입력 (기준값)
+    ws.append([_dt.date(2026, 7, 1), 8.5, 620])
+    # 2) 엑셀 누적시간 서식 [h]:mm (24시간 넘는 합계에 흔히 씀) -> timedelta
+    row = ws.max_row + 1
+    ws.cell(row=row, column=1, value=_dt.date(2026, 7, 2))
+    cell = ws.cell(row=row, column=2, value=8.5 / 24)
+    cell.number_format = "[h]:mm"
+    ws.cell(row=row, column=3, value=621)
+    # 3) 일반 시각 서식 h:mm (24시간 이내) -> time
+    row = ws.max_row + 1
+    ws.cell(row=row, column=1, value=_dt.date(2026, 7, 3))
+    cell = ws.cell(row=row, column=2, value=8.5 / 24)
+    cell.number_format = "h:mm"
+    ws.cell(row=row, column=3, value=622)
+    # 4) 사람이 직접 문자열로 입력
+    ws.append([_dt.date(2026, 7, 4), "8:30", 623])
+    return _save_source(wb, "C3_가동시간_시간형식혼재.xlsx")
+
+
+def source_c4_offseason_zero() -> str:
+    """냉방기간이 아니라 냉동기를 전혀 가동하지 않은 달 (전부 0)."""
+    wb = Workbook()
+    ws = wb.active
+    ws.title = "냉동기일지"
+    ws.append(["일자", "가동시간", "전력사용량"])
+    for day in range(1, 29):
+        ws.append([_dt.date(2026, 1, day), 0, 0])
+    return _save_source(wb, "C4_비수기_전부0.xlsx")
+
+
+def source_c5_equipment_id_labels() -> str:
+    """설비 이름표에 숫자가 섞인 컬럼이 있는 경우 (1호기/2동/3층 같은 라벨).
+
+    라벨 컬럼을 실수로 합산하면 안 된다는 것을 확인하는 케이스다.
+    """
+    wb = Workbook()
+    ws = wb.active
+    ws.title = "설비현황"
+    ws.append(["일자", "설비명", "위치", "가동시간"])
+    for day in range(1, 6):
+        ws.append([_dt.date(2026, 7, day), "1호기", "3동 2층", 8.0 + day * 0.1])
+    return _save_source(wb, "C5_설비이름표_숫자혼재.xlsx")
+
+
 # =========================================================================== #
 # 템플릿
 # =========================================================================== #
@@ -274,6 +373,60 @@ def template_e5_emission_report() -> str:
     return _save_template(wb, "E_T5_온실가스배출량.xlsx")
 
 
+def template_c1_chiller_operations_ledger() -> str:
+    """냉동기 3대의 설비별 가동시간·전력사용량과, 수식으로 계산한 총계·부하율."""
+    wb = Workbook()
+    ws = wb.active
+    ws.title = "운영현황"
+    ws.merge_cells("A1:D1")
+    ws["A1"] = "{{대상월}} 냉동기 운영현황"
+    ws["A1"].font = Font(size=13, bold=True)
+    ws["A1"].alignment = CENTER
+    ws["A1"].fill = HEAD_FILL
+
+    for index, name in enumerate(["구분", "가동시간(h)", "전력사용량(kWh)", "비고"], start=1):
+        cell = ws.cell(row=3, column=index, value=name)
+        cell.font = Font(bold=True)
+        cell.fill = HEAD_FILL
+        cell.border = BOX
+
+    rows = [
+        ("1호기", "{{1호기_가동시간}}", "{{1호기_전력사용량}}"),
+        ("2호기", "{{2호기_가동시간}}", "{{2호기_전력사용량}}"),
+        ("3호기", "{{3호기_가동시간}}", "{{3호기_전력사용량}}"),
+    ]
+    for offset, (label, hours_tag, power_tag) in enumerate(rows, start=4):
+        ws.cell(row=offset, column=1, value=label).border = BOX
+        ws.cell(row=offset, column=2, value=hours_tag).border = BOX
+        ws.cell(row=offset, column=3, value=power_tag).border = BOX
+        ws.cell(row=offset, column=4).border = BOX
+
+    ws["A7"] = "합계"
+    ws["A7"].font = Font(bold=True)
+    ws["B7"] = "=SUM(B4:B6)"
+    ws["C7"] = "=SUM(C4:C6)"
+    for col in (1, 2, 3, 4):
+        ws.cell(row=7, column=col).border = BOX
+    return _save_template(wb, "C_T1_냉동기운영현황.xlsx")
+
+
+def template_c2_chiller_simple_report() -> str:
+    """단순 가동시간·전력사용량 집계 보고서 (워드) - 시간형식 원본 검증용."""
+    doc = Document()
+    doc.add_heading("냉동기 가동 현황 보고서", level=1).alignment = WD_ALIGN_PARAGRAPH.CENTER
+    doc.add_paragraph("대상 기간: {{대상월}}")
+
+    table = doc.add_table(rows=3, cols=2)
+    table.style = "Table Grid"
+    table.cell(0, 0).text = "구분"
+    table.cell(0, 1).text = "값"
+    table.cell(1, 0).text = "총 가동시간(h)"
+    table.cell(1, 1).text = "{{가동시간}}"
+    table.cell(2, 0).text = "총 전력사용량(kWh)"
+    table.cell(2, 1).text = "{{전력사용량}}"
+    return _save_doc(doc, "C_T2_냉동기가동_단순보고서.docx")
+
+
 # =========================================================================== #
 # 실행
 # =========================================================================== #
@@ -306,6 +459,11 @@ SOURCE_BUILDERS = [
     source_e5_emission_usage,
     source_e6_diagnosis_measures,
     source_e7_derived_intensity_ready,
+    source_c1_chillers_wide,
+    source_c2_chillers_long,
+    source_c3_chiller_time_format,
+    source_c4_offseason_zero,
+    source_c5_equipment_id_labels,
 ]
 
 TEMPLATE_BUILDERS = [
@@ -314,6 +472,8 @@ TEMPLATE_BUILDERS = [
     template_e3_savings_report,
     template_e4_contract_demand_ledger,
     template_e5_emission_report,
+    template_c1_chiller_operations_ledger,
+    template_c2_chiller_simple_report,
 ]
 
 

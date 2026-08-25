@@ -131,6 +131,58 @@ def check_e4_contract_demand(path: str, result) -> None:
     assert cells["계약전력관리!B6"] == '=IF(B4>B3,"초과","정상")', "판정 수식이 깨짐"
 
 
+def check_c1_chiller_wide(path: str, result) -> None:
+    cells = excel_values(path)
+    assert cells["운영현황!B4"] == 263.5, cells.get("운영현황!B4")
+    assert cells["운영현황!C4"] == 19716, cells.get("운영현황!C4")
+    assert cells["운영현황!B5"] == 217, cells.get("운영현황!B5")
+    assert cells["운영현황!B6"] == 201.5, cells.get("운영현황!B6")
+    assert cells["운영현황!B7"] == "=SUM(B4:B6)", "합계 수식이 깨짐"
+    assert cells["운영현황!C7"] == "=SUM(C4:C6)", "합계 수식이 깨짐"
+
+
+def check_c2_chiller_time_formats(path: str, result) -> None:
+    grid = word_table_grid(path)
+    values = {row[0]: row[1] for row in grid[1:]}
+    # 소수(8.5) + [h]:mm(timedelta) + h:mm(time) + 'HH:MM' 문자열, 나흘치
+    # 8.5 x 4 = 34.0 이 정확히 나와야 시간형식 혼재가 올바르게 처리된 것
+    assert values["총 가동시간(h)"] == "34", values
+    assert values["총 전력사용량(kWh)"] == "2486", values
+
+
+def check_c4_offseason_zero(path: str, result) -> None:
+    grid = word_table_grid(path)
+    values = {row[0]: row[1] for row in grid[1:]}
+    assert values["총 가동시간(h)"] == "0", f"비수기 0값이 0이 아닌 다른 값으로 나옴: {values}"
+    assert values["총 전력사용량(kWh)"] == "0", values
+    assert result.monthly.day_counts["2026-01"] == 28, result.monthly.day_counts
+
+
+def check_c2_equipment_merged(path: str, result) -> None:
+    """세로형식으로 여러 설비가 섞이면 설비 구분 없이 합쳐진다는 것을 확인.
+
+    이건 버그가 아니라 이 프로그램의 설계상 한계다(연-월로만 그룹화하고,
+    다른 카테고리 축으로는 나누지 않는다). 검증 목적은 '조용히 틀린 값이
+    아니라 예측 가능한 합계가 나온다'는 것을 확인하는 것이다.
+    """
+    monthly = result.monthly
+    # 1호기(8.5h×5)+2호기(7.0h×5)+3호기(6.5h×5) = 110.0
+    assert monthly.get("2026-08", "가동시간") == 110, monthly.values
+    assert monthly.day_counts["2026-08"] == 5, "날짜 자체는 5일로 정확히 셈"
+
+
+def check_c5_label_not_summed(path: str, result) -> None:
+    """'1호기', '3동 2층' 같은 라벨 컬럼이 실수로 합산되지 않는지 확인."""
+    from reportgen.aggregator import suggest_methods, detect_date_column
+
+    table = result.table
+    suggested = suggest_methods(table, detect_date_column(table))
+    assert suggested["설비명"] != "sum", f"라벨 컬럼이 합산으로 추천됨: {suggested}"
+    assert suggested["위치"] != "sum", f"라벨 컬럼이 합산으로 추천됨: {suggested}"
+    monthly = result.monthly
+    assert monthly.get("2026-07", "가동시간") is not None, monthly.values
+
+
 def check_e5_emission(path: str, result) -> None:
     cells = excel_values(path)
     assert cells["배출량!B3"] == 28892, cells.get("배출량!B3")
@@ -198,6 +250,47 @@ CASES: list[Case] = [
             "부서": Binding(source="literal", literal="OO공장"),
             "건수": Binding(source="literal", literal="5"),
         },
+    ),
+    Case(
+        "C1 대형빌딩 냉동기 3대 설비별 집계 + 합계 수식",
+        "C1_냉동기3대_넓은형식.xlsx",
+        "C_T1_냉동기운영현황.xlsx",
+        check_c1_chiller_wide,
+        aggregate=AggregationSpec(
+            methods={
+                "1호기_가동시간": "sum", "1호기_전력사용량": "sum",
+                "2호기_가동시간": "sum", "2호기_전력사용량": "sum",
+                "3호기_가동시간": "sum", "3호기_전력사용량": "sum",
+            }
+        ),
+    ),
+    Case(
+        "C2 세로형식 다중설비(연-월로만 그룹화되어 합쳐짐 확인)",
+        "C2_냉동기_세로형식.xlsx",
+        "C_T2_냉동기가동_단순보고서.docx",
+        check_c2_equipment_merged,
+        aggregate=AggregationSpec(methods={"가동시간": "sum", "전력사용량": "sum"}),
+    ),
+    Case(
+        "C3 가동시간 시간형식 혼재([h]:mm/h:mm/'HH:MM')",
+        "C3_가동시간_시간형식혼재.xlsx",
+        "C_T2_냉동기가동_단순보고서.docx",
+        check_c2_chiller_time_formats,
+        aggregate=AggregationSpec(methods={"가동시간": "sum", "전력사용량": "sum"}),
+    ),
+    Case(
+        "C4 비수기 냉동기 미가동(전부 0)",
+        "C4_비수기_전부0.xlsx",
+        "C_T2_냉동기가동_단순보고서.docx",
+        check_c4_offseason_zero,
+        aggregate=AggregationSpec(methods={"가동시간": "sum", "전력사용량": "sum"}),
+    ),
+    Case(
+        "C5 설비 이름표에 숫자 혼재(1호기/3동 2층)",
+        "C5_설비이름표_숫자혼재.xlsx",
+        "C_T2_냉동기가동_단순보고서.docx",
+        check_c5_label_not_summed,
+        aggregate=AggregationSpec(methods={"가동시간": "sum"}),
     ),
 ]
 
