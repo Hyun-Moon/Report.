@@ -142,6 +142,46 @@ def test_formula_cache_bypass() -> None:
         print(f"  FAIL {label}: warnings={table.warnings}, rows={table.rows}")
 
 
+def test_table_block_detection() -> None:
+    """한 시트에 표가 여러 개 섞여 있을 때, 후보를 정확히 나누는지 확인.
+
+    대형 빌딩 에너지 대장처럼 좌우로 나란히 놓인 표(전력/스팀/용수)와
+    위아래로 별개인 표가 한 시트에 있는 경우를 재현한 원본으로 검증한다.
+    """
+    from reportgen.data_reader import list_table_blocks, read_table, ReadOptions
+
+    print("\n[표 후보 찾기]")
+    path = os.path.join(SOURCES, "S21_다중표시트.xlsx")
+    blocks = list_table_blocks(path)
+    ranges = {b.range for b in blocks}
+    expected = {"B7:D9", "F7:H9", "J7:K9", "A16:H18"}
+    label = f"좌우로 나란한 표 3개 + 별개 표 1개를 정확히 분리 (찾은 것: {sorted(ranges)})"
+    if expected <= ranges:
+        print(f"  OK   {label}")
+    else:
+        FAILURES.append(label)
+        print(f"  FAIL {label}")
+
+    steam_block = next((b for b in blocks if b.range == "F7:H9"), None)
+    if steam_block is None:
+        FAILURES.append("스팀 표 후보를 못 찾음")
+        print("  FAIL 스팀 표 후보를 못 찾음")
+        return
+
+    table = read_table(
+        path, ReadOptions(cell_range=steam_block.range, header_rows=2, auto_detect=False)
+    )
+    ok = table.columns == ["스팀 / 구분", "사용량", "사용금액"] and table.rows == [
+        ["금년월보사용량", 262000, None]
+    ]
+    label2 = "찾은 표 범위로 실제 읽기까지 정상 동작"
+    if ok:
+        print(f"  OK   {label2}")
+    else:
+        FAILURES.append(label2)
+        print(f"  FAIL {label2}: columns={table.columns}, rows={table.rows}")
+
+
 def test_graceful_paths() -> None:
     """오류가 '나면 안 되는' 경우들."""
     print("\n[예외 없이 넘어가야 하는 경우]")
@@ -223,6 +263,7 @@ def test_no_network() -> None:
 def main() -> int:
     test_input_errors()
     test_formula_cache_bypass()
+    test_table_block_detection()
     test_graceful_paths()
     test_no_network()
     print()

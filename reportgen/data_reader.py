@@ -31,7 +31,16 @@ from .errors import (
     SheetNotFoundError,
 )
 
-__all__ = ["Table", "ReadOptions", "read_table", "list_sheets", "parse_range", "FormulaCacheError"]
+__all__ = [
+    "Table",
+    "ReadOptions",
+    "TableBlock",
+    "read_table",
+    "list_sheets",
+    "parse_range",
+    "list_table_blocks",
+    "FormulaCacheError",
+]
 
 _RE_RANGE = re.compile(r"^\s*([A-Za-z]{1,3})(\d+)\s*:\s*([A-Za-z]{1,3})(\d+)\s*$")
 #: 표의 '시작 위치와 컬럼 범위'를 찾을 때만 훑어보는 창. 데이터 끝 행은 이 값과
@@ -150,6 +159,113 @@ def parse_range(text: str) -> tuple[int, int, int, int]:
         row1, row2 = min(row1, row2), max(row1, row2)
         col1, col2 = min(col1, col2), max(col1, col2)
     return row1, col1, row2, col2
+
+
+@dataclass
+class TableBlock:
+    """시트 안에서 찾아낸 '표처럼 보이는 덩어리' 하나."""
+
+    range: str  # "B3:N5"
+    row1: int
+    col1: int
+    row2: int
+    col2: int
+    n_rows: int
+    n_cols: int
+    preview: str  # 첫 줄 내용 요약 (표를 구분하는 용도)
+
+    def label(self) -> str:
+        return f"{self.range}  ({self.n_rows}행 x {self.n_cols}열)  {self.preview}"
+
+
+def list_table_blocks(path: str, sheet_name: Optional[str] = None) -> list[TableBlock]:
+    """한 시트 안에 표가 여러 개 뒤섞여 있어도, 표처럼 보이는 덩어리를 전부 찾는다.
+
+    실무 엑셀은 시트 하나에 표 하나만 깔끔하게 있는 경우가 오히려 드물다 —
+    제목 줄, 서로 다른 표 여러 개가 위아래·좌우로 붙어 있는 경우가 흔하다.
+    이 함수는 채워진 셀들을 상하좌우로 이어진 덩어리(연결 요소)로 묶어서
+    표 후보 목록을 만든다. GUI 1단계의 [표 후보 찾기] 가 이 함수를 쓴다.
+
+    ``자동 감지`` 하나가 시트 전체를 한 표로 오인하는 문제(여러 표가 섞인
+    실제 업무 파일에서 흔히 일어남)를, 후보를 보여주고 사람이 고르게 해서
+    피해간다.
+    """
+    workbook = _open_workbook(path, data_only=True)
+    try:
+        sheet = _pick_sheet(workbook, sheet_name, path)
+        merged = _merged_lookup(sheet)
+        max_row = min(sheet.max_row or 0, _SCAN_ROWS)
+        max_col = min(sheet.max_column or 0, _SCAN_COLS)
+        if max_row < 1 or max_col < 1:
+            return []
+
+        filled: set[tuple[int, int]] = set()
+        for r in range(1, max_row + 1):
+            for c in range(1, max_col + 1):
+                if _is_filled(_value_at(sheet, merged, r, c)):
+                    filled.add((r, c))
+        if not filled:
+            return []
+
+        blocks: list[TableBlock] = []
+        for cells in _connected_components(filled):
+            rows = [r for r, _ in cells]
+            cols = [c for _, c in cells]
+            row1, row2 = min(rows), max(rows)
+            col1, col2 = min(cols), max(cols)
+            if row1 == row2 and col1 == col2:
+                continue  # 셀 하나짜리 '섬'(스치는 글자)은 표로 안 본다
+            if len(cells) < 3:
+                continue
+
+            preview_bits: list[str] = []
+            for c in range(col1, min(col2, col1 + 4) + 1):
+                value = _value_at(sheet, merged, row1, c)
+                text = _stringify(value)
+                if text:
+                    preview_bits.append(text)
+            blocks.append(
+                TableBlock(
+                    range=f"{get_column_letter(col1)}{row1}:{get_column_letter(col2)}{row2}",
+                    row1=row1,
+                    col1=col1,
+                    row2=row2,
+                    col2=col2,
+                    n_rows=row2 - row1 + 1,
+                    n_cols=col2 - col1 + 1,
+                    preview=", ".join(preview_bits) if preview_bits else "(제목 없음)",
+                )
+            )
+
+        blocks.sort(key=lambda b: (b.row1, b.col1))
+        return blocks
+    finally:
+        workbook.close()
+
+
+def _connected_components(cells: set[tuple[int, int]]) -> list[list[tuple[int, int]]]:
+    """채워진 셀들을 상하좌우로 붙어 있는 덩어리 단위로 묶는다 (너비우선 탐색).
+
+    대각선으로만 붙어 있거나, 빈 행/열 하나로 떨어져 있는 셀은 별도 덩어리로
+    본다 — 그래야 옆으로 나란히 놓인 표들과, 위아래로 쌓인 표들이 각각
+    구분된다.
+    """
+    remaining = set(cells)
+    components: list[list[tuple[int, int]]] = []
+    while remaining:
+        start = next(iter(remaining))
+        remaining.discard(start)
+        queue = [start]
+        group = [start]
+        while queue:
+            r, c = queue.pop()
+            for neighbor in ((r - 1, c), (r + 1, c), (r, c - 1), (r, c + 1)):
+                if neighbor in remaining:
+                    remaining.discard(neighbor)
+                    queue.append(neighbor)
+                    group.append(neighbor)
+        components.append(group)
+    return components
 
 
 def read_table(path: str, options: Optional[ReadOptions] = None) -> Table:

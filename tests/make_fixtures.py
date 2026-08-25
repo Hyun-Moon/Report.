@@ -882,6 +882,51 @@ def source_20_totals_row_mixed() -> str:
     return _save_wb(wb, "S20_합계행혼재.xlsx", SOURCE_DIR)
 
 
+def source_21_multi_block_sheet() -> str:
+    """한 시트 안에 표가 여러 개(좌우로 3개 + 위아래로 별개 표) 뒤섞인 경우.
+
+    대형 빌딩 에너지 관리 대장에서 흔한 구조: 날짜가 가로로 늘어선 표,
+    전력/스팀/용수가 나란히 놓인 요약표, 그 아래 또 다른 일별 표가 이어짐.
+    ``list_table_blocks()`` 가 이 덩어리들을 정확히 나누는지 검증하는 원본.
+    """
+    wb = Workbook()
+    ws = wb.active
+    ws.title = "에너지사용량"
+
+    ws["A1"] = "일별값(kwh)"
+    ws["C2"] = "2026-07-01"
+    ws["A3"] = "일자"
+    days = ["1일 수", "2일 목", "3일 금", "4일 토", "5일 일", "6일 월", "7일 화"]
+    for index, day in enumerate(days):
+        ws.cell(row=3, column=2 + index, value=day)
+    ws["A4"] = "보고서값(2차)"
+    ws["A5"] = "보고서값(1차)"
+    # 6행: 빈 행 (표 구분)
+
+    ws["B7"] = "전력"
+    ws["B8"], ws["C8"], ws["D8"] = "구분", "사용량", "사용금액"
+    ws["B9"], ws["C9"], ws["D9"] = "금년월보사용량", 5312566, 912061331
+
+    ws["F7"] = "스팀"
+    ws["F8"], ws["G8"], ws["H8"] = "구분", "사용량", "사용금액"
+    ws["F9"], ws["G9"] = "금년월보사용량", 262000
+
+    ws["J7"] = "용수"
+    ws["J8"], ws["K8"] = "구분", "사용량"
+    ws["J9"], ws["K9"] = "금년월보사용량", 29918
+    # 13~15행: 빈 행 (표 구분)
+
+    ws["A16"], ws["B16"] = "일별값", "Nm3"
+    ws["A17"] = "일자"
+    for index, day in enumerate(days):
+        ws.cell(row=17, column=2 + index, value=day)
+    ws["A18"] = "주방스팀(Nm3)"
+    for index, value in enumerate([686, 673, 642, 181, 168, 651, 660]):
+        ws.cell(row=18, column=2 + index, value=value)
+
+    return _save_wb(wb, "S21_다중표시트.xlsx", SOURCE_DIR)
+
+
 # =========================================================================== #
 # 실행
 # =========================================================================== #
@@ -947,6 +992,7 @@ SOURCE_BUILDERS = [
     source_18_uncalculated_formula,
     source_19_full_month_no_gaps,
     source_20_totals_row_mixed,
+    source_21_multi_block_sheet,
 ]
 
 

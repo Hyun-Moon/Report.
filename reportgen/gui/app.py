@@ -33,7 +33,7 @@ from ..aggregator import (
     detect_date_column,
     suggest_methods,
 )
-from ..data_reader import ReadOptions, Table, list_sheets, read_table
+from ..data_reader import ReadOptions, Table, list_sheets, list_table_blocks, read_table
 from ..dateutils import month_label, parse_date
 from ..errors import ReportGenError
 from ..generator import GenerationRequest, Prepared, generate
@@ -165,6 +165,10 @@ class ReportApp(ttk.Frame):
             command=self._toggle_auto,
         ).pack(side="left", padx=(16, 0))
 
+        ttk.Button(line1, text="표 후보 찾기…", command=self._find_table_blocks).pack(
+            side="left", padx=(16, 0)
+        )
+
         line2 = ttk.Frame(options)
         line2.pack(fill="x", pady=2)
         ttk.Label(line2, text="셀 범위", width=10).pack(side="left")
@@ -213,6 +217,64 @@ class ReportApp(ttk.Frame):
     def _toggle_auto(self) -> None:
         state = "disabled" if self.auto_detect.get() else "normal"
         self.range_entry.configure(state=state)
+
+    def _find_table_blocks(self) -> None:
+        """한 시트 안에 표가 여러 개 섞여 있을 때, 후보를 찾아 고르게 한다.
+
+        실무 엑셀은 시트 하나에 표 하나만 깔끔히 있는 경우가 오히려 드물다.
+        '자동 감지'가 여러 표를 한 덩어리로 잘못 잡는 문제를, 후보 목록을
+        보여주고 사람이 고르는 방식으로 피해간다.
+        """
+        path = self.src_path.get()
+        if not path:
+            messagebox.showinfo("안내", "먼저 원본 엑셀 파일을 선택해 주세요.")
+            return
+        try:
+            blocks = list_table_blocks(path, self.sheet_var.get() or None)
+        except ReportGenError as exc:
+            show_error("표 후보 찾기 실패", exc)
+            return
+
+        if not blocks:
+            messagebox.showinfo("표 후보 찾기", "이 시트에서 표처럼 보이는 덩어리를 찾지 못했습니다.")
+            return
+
+        dialog = tk.Toplevel(self)
+        dialog.title("표 후보 — 원하는 표를 고르세요")
+        dialog.geometry("640x320")
+        dialog.transient(self.master_window)
+
+        ttk.Label(
+            dialog,
+            text=f"이 시트에서 표처럼 보이는 덩어리 {len(blocks)}개를 찾았습니다. "
+            "하나를 골라 [이 표 사용] 을 누르면 셀 범위가 채워집니다.",
+            wraplength=600,
+            justify="left",
+        ).pack(fill="x", padx=10, pady=(10, 6))
+
+        listbox = tk.Listbox(dialog, height=10, font=("", 10))
+        for block in blocks:
+            listbox.insert("end", block.label())
+        listbox.pack(fill="both", expand=True, padx=10)
+        if blocks:
+            listbox.selection_set(0)
+
+        def use_selected() -> None:
+            selection = listbox.curselection()
+            if not selection:
+                return
+            block = blocks[selection[0]]
+            self.auto_detect.set(False)
+            self._toggle_auto()
+            self.range_var.set(block.range)
+            dialog.destroy()
+            self._say(f"표 범위를 '{block.range}' 로 지정했습니다. [데이터 읽기]를 눌러 확인하세요.")
+
+        buttons = ttk.Frame(dialog)
+        buttons.pack(fill="x", padx=10, pady=10)
+        ttk.Button(buttons, text="이 표 사용", command=use_selected).pack(side="right")
+        ttk.Button(buttons, text="닫기", command=dialog.destroy).pack(side="right", padx=(0, 6))
+        listbox.bind("<Double-1>", lambda _e: use_selected())
 
     def _pick_source(self) -> None:
         path = filedialog.askopenfilename(
