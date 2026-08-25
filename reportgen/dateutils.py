@@ -42,6 +42,8 @@ _RE_MD = re.compile(r"^\s*(\d{1,2})\s*[-./월]\s*(\d{1,2})\s*일?\s*$")
 _RE_D = re.compile(r"^\s*(\d{1,2})\s*일\s*$")
 # 'YYYY-MM-DD HH:MM(:SS)' 같이 시간이 붙은 경우 앞부분만 떼어낸다.
 _RE_DATETIME_PREFIX = re.compile(r"^\s*(\d{4}[-./]\d{1,2}[-./]\d{1,2})[ T]\d")
+# '2026-07-01(수)' 처럼 끝에 요일/비고가 괄호로 덧붙은 경우 그 부분을 뗀다.
+_RE_TRAILING_PAREN = re.compile(r"\s*[(（][^()（）]{1,6}[)）]\s*$")
 
 
 def excel_serial_to_date(serial: float) -> _dt.date:
@@ -91,6 +93,8 @@ def parse_date(
     prefix = _RE_DATETIME_PREFIX.match(text)
     if prefix:
         text = prefix.group(1)
+    else:
+        text = _RE_TRAILING_PAREN.sub("", text)
 
     m = _RE_YMD.match(text)
     if m:

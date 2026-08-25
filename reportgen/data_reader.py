@@ -23,9 +23,15 @@ from openpyxl import load_workbook
 from openpyxl.utils import column_index_from_string, get_column_letter
 from openpyxl.utils.cell import coordinate_from_string
 
-from .errors import CellRangeError, FileFormatError, HeaderError, SheetNotFoundError
+from .errors import (
+    CellRangeError,
+    FileFormatError,
+    FormulaCacheError,
+    HeaderError,
+    SheetNotFoundError,
+)
 
-__all__ = ["Table", "ReadOptions", "read_table", "list_sheets", "parse_range"]
+__all__ = ["Table", "ReadOptions", "read_table", "list_sheets", "parse_range", "FormulaCacheError"]
 
 _RE_RANGE = re.compile(r"^\s*([A-Za-z]{1,3})(\d+)\s*:\s*([A-Za-z]{1,3})(\d+)\s*$")
 #: 표의 '시작 위치와 컬럼 범위'를 찾을 때만 훑어보는 창. 데이터 끝 행은 이 값과
@@ -174,6 +180,9 @@ def read_table(path: str, options: Optional[ReadOptions] = None) -> Table:
         columns = _build_columns(grid[:header_rows], col1)
         body = grid[header_rows:]
 
+        if any(v is None for row in body for v in row):
+            _check_formula_cache(path, sheet.title, row1 + header_rows, col1, row2, columns)
+
         if options.skip_blank_rows:
             body = [row for row in body if any(_is_filled(v) for v in row)]
 
@@ -206,6 +215,37 @@ def _open_workbook(path: str, data_only: bool):
             f"엑셀 파일을 열지 못했습니다: {os.path.basename(path)}",
             f"파일이 손상되었거나 다른 프로그램이 열고 있을 수 있습니다. ({exc})",
         ) from exc
+
+
+def _check_formula_cache(
+    path: str, sheet_name: str, body_start_row: int, col1: int, row2: int, columns: list[str]
+) -> None:
+    """빈 칸 중에 '계산되지 않은 수식'이 섞여 있으면 미리 알려준다.
+
+    엑셀 파일은 수식과 별개로 마지막 계산 결과를 셀에 캐시해 둔다. 이
+    프로그램은 그 캐시만 읽으므로(``data_only=True``), 프로그램이 만들었거나
+    LibreOffice 등에서 재계산 없이 저장된 파일은 수식 칸이 조용히 빈 값으로
+    읽힌다. 집계가 슬쩍 틀어지는 것보다는 여기서 바로 알려주는 편이 안전하다.
+    """
+    workbook = load_workbook(path, data_only=False, read_only=False)
+    try:
+        sheet = workbook[sheet_name]
+        offenders: list[str] = []
+        for r in range(body_start_row, row2 + 1):
+            for c_index, name in enumerate(columns):
+                cell = sheet.cell(row=r, column=col1 + c_index)
+                if cell.data_type == "f":
+                    offenders.append(f"{name} ({cell.coordinate})")
+        if offenders:
+            preview = ", ".join(offenders[:5])
+            more = f" 외 {len(offenders) - 5}건" if len(offenders) > 5 else ""
+            raise FormulaCacheError(
+                "원본 엑셀에 계산되지 않은 수식 셀이 있어 값을 읽을 수 없습니다.",
+                f"엑셀(또는 한셀/LibreOffice Calc 등)에서 파일을 한 번 열어 저장한 뒤 "
+                f"다시 시도해 주세요. 문제 위치: {preview}{more}",
+            )
+    finally:
+        workbook.close()
 
 
 def _pick_sheet(workbook, sheet_name: Optional[str], path: str):

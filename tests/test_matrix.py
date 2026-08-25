@@ -218,6 +218,28 @@ def check_w8_special(path: str, result) -> None:
     assert "3596" in blob, f"'사용량 (2026-01)' 미치환: {blob}"
 
 
+def check_w10_vertical_group(path: str, result) -> None:
+    grid = word_table_grid(path)
+    flat = "\n".join("|".join(row) for row in grid)
+    assert "{{" not in flat, f"태그가 남음:\n{flat}"
+    assert grid[1] == ["전력", "사용량", "12500"], grid[1]
+    assert grid[2] == ["전력", "최대수요", "480"], grid[2]
+    assert grid[3] == ["환경", "온도", "23.4"], grid[3]
+
+
+def check_w11_bullets(path: str, result) -> None:
+    blob = word_blob(path)
+    assert "{{" not in blob, f"태그가 남음: {blob}"
+    for needle in ("2026년 8월", "12500", "480", "23.4", "김하늘", "시설관리팀"):
+        assert needle in blob, f"'{needle}' 없음: {blob}"
+
+
+def check_w12_split_runs(path: str, result) -> None:
+    blob = word_blob(path)
+    assert "{{" not in blob, f"쪼개진 태그가 복구되지 않음: {blob}"
+    assert "12500" in blob and "480" in blob, blob
+
+
 def check_w9_textbox(path: str, result) -> None:
     # 텍스트 상자는 python-docx 문단 순회로 안 잡히므로 XML 을 직접 본다
     xml = Document(path)._element.xml
@@ -295,6 +317,29 @@ def check_x6_anchor(path: str, result) -> None:
     assert cells["명세!A20"] == "이 아래는 표 영역이 아닙니다.", "앵커 아래 기존 내용이 훼손됨"
 
 
+def check_x8_frozen_rules(path: str, result) -> None:
+    workbook = load_workbook(path)
+    sheet = workbook.active
+    assert sheet["B2"].value == 12500, sheet["B2"].value
+    assert sheet["B3"].value == 480, sheet["B3"].value
+    assert str(sheet.freeze_panes) == "A2", f"틀 고정 소실: {sheet.freeze_panes}"
+    assert len(list(sheet.conditional_formatting)) == 1, "조건부 서식 소실"
+    assert len(sheet.data_validations.dataValidation) == 1, "데이터 유효성 소실"
+    workbook.close()
+
+
+def check_x9_seal_grid(path: str, result) -> None:
+    workbook = load_workbook(path)
+    sheet = workbook.active
+    ranges = {str(r) for r in sheet.merged_cells.ranges}
+    for expected in ("A1:F1", "A4:A6", "B4:B6", "C4:C6", "D4:D6"):
+        assert expected in ranges, f"병합 {expected} 소실: {ranges}"
+    assert sheet["B8"].value == "2026년 8월", sheet["B8"].value
+    assert sheet["B9"].value == "김하늘", sheet["B9"].value
+    assert sheet["B10"].value == "1,375,000", sheet["B10"].value
+    workbook.close()
+
+
 def check_x7_cell_coords(path: str, result) -> None:
     cells = excel_values(path)
     assert cells["실적표!A4"] == "2026년 1월", cells.get("실적표!A4")
@@ -337,6 +382,54 @@ def check_many_rows(path: str, result) -> None:
     assert "{{" not in blob, "태그가 남음"
     # 집계 없이 첫 행만 쓰는 템플릿이므로 첫 행 값이 들어가야 한다
     assert "100" in blob, blob
+
+
+def check_weekday_suffix(path: str, result) -> None:
+    monthly = result.monthly
+    assert monthly.periods == ["2026-07"], monthly.periods
+    assert monthly.day_counts["2026-07"] == 10, monthly.day_counts
+    assert monthly.get("2026-07", "사용량") == 2055, monthly.values
+
+
+def check_duplicate_dates(path: str, result) -> None:
+    monthly = result.monthly
+    assert monthly.day_counts["2026-08"] == 5, "같은 날짜 두 번 기록을 별도 날짜로 셈"
+    assert monthly.get("2026-08", "사용량") == 580, monthly.values
+
+
+def check_units_and_negative(path: str, result) -> None:
+    monthly = result.monthly
+    assert monthly.get("2026-09", "사용량") == 3735, monthly.values
+    assert monthly.day_counts["2026-09"] == 4, monthly.day_counts
+
+
+def check_row_col_offset(path: str, result) -> None:
+    assert result.table.columns == ["부서", "사용량", "최대수요"], result.table.columns
+    assert result.table.n_rows == 3, result.table.n_rows
+    blob = word_blob(path)
+    assert "12500" in blob and "{{" not in blob, blob
+
+
+def check_merged_in_body(path: str, result) -> None:
+    monthly = result.monthly
+    assert monthly.get("2026-10", "사용량") == 3009, monthly.values
+    # 병합된 부서명이 각 날짜 행에 정상 전파되었는지
+    assert result.table.column_values("부서") == [
+        "시설관리팀", "시설관리팀", "시설관리팀", "생산1팀", "생산1팀",
+    ], result.table.column_values("부서")
+
+
+def check_full_month(path: str, result) -> None:
+    monthly = result.monthly
+    assert monthly.day_counts["2026-12"] == 31, monthly.day_counts
+    assert monthly.get("2026-12", "사용량") == 9796, monthly.values
+
+
+def check_totals_row_skipped(path: str, result) -> None:
+    monthly = result.monthly
+    assert monthly.skipped_rows == 2, f"요약행 2개가 스킵되어야 함: {monthly.skipped_rows}"
+    assert monthly.day_counts["2026-05"] == 5, monthly.day_counts
+    assert monthly.get("2026-05", "사용량") == 1515, monthly.values
 
 
 def check_single_row(path: str, result) -> None:
@@ -439,8 +532,10 @@ CASES: list[Case] = [
         aggregate=AGG_BASIC,
         multi_month_mode="wide",
     ),
-    # 2. 엑셀 템플릿 다양성
     Case("W9 텍스트 상자 안의 태그", "S1_헤더1행.xlsx", "W9_텍스트상자.docx", check_w9_textbox),
+    Case("W10 세로 병합 그룹 라벨 표", "S1_헤더1행.xlsx", "W10_세로그룹표.docx", check_w10_vertical_group),
+    Case("W11 글머리·번호 목록 태그", "S1_헤더1행.xlsx", "W11_글머리목록.docx", check_w11_bullets),
+    Case("W12 워드가 쪼갠 run 안의 태그", "S1_헤더1행.xlsx", "W12_런분할태그.docx", check_w12_split_runs),
     # 2. 엑셀 템플릿 다양성
     Case(
         "X1 단일시트 연속범위",
@@ -475,6 +570,19 @@ CASES: list[Case] = [
             "실적표!E4": Binding(source="literal", literal="설비팀"),
         },
     ),
+    Case(
+        "X8 틀 고정·조건부 서식·유효성",
+        "S1_헤더1행.xlsx",
+        "X8_틀고정조건부서식.xlsx",
+        check_x8_frozen_rules,
+    ),
+    Case(
+        "X9 결재란형 촘촘한 병합",
+        "S1_헤더1행.xlsx",
+        "X9_결재란병합.xlsx",
+        check_x9_seal_grid,
+        extra_bindings={"요금": Binding(source="literal", literal="1,375,000")},
+    ),
     # 3. 원본 데이터 다양성
     Case("S2 헤더 2행(병합 헤더)", "S2_헤더2행.xlsx", "W1_본문만_표없음.docx", check_two_row_header),
     Case("S3 빈 셀·빈 행 혼재", "S3_빈셀혼재.xlsx", "X1_단일시트.xlsx", check_blanks),
@@ -487,6 +595,19 @@ CASES: list[Case] = [
     ),
     Case("S11 데이터 행이 아주 많음", "S11_행많음.xlsx", "W1_본문만_표없음.docx", check_many_rows),
     Case("S12 데이터 행이 하나뿐", "S12_한행.xlsx", "W1_본문만_표없음.docx", check_single_row),
+    Case(
+        "S16 제목 블록 + 열 오프셋 혼합",
+        "S16_행열오프셋.xlsx",
+        "W1_본문만_표없음.docx",
+        check_row_col_offset,
+    ),
+    Case(
+        "S17 데이터 본문 안의 병합 셀",
+        "S17_본문병합.xlsx",
+        "X1_단일시트.xlsx",
+        check_merged_in_body,
+        aggregate=AggregationSpec(date_column="일자", methods={"사용량": "sum", "부서": "text_join"}),
+    ),
     # 4. 집계 다양성
     Case(
         "A1 여러 달 -> 월별 보고서 각각",
@@ -520,6 +641,41 @@ CASES: list[Case] = [
         "X1_단일시트.xlsx",
         check_weekend_excluded,
         aggregate=AggregationSpec(exclude_weekends=True, methods={"사용량": "sum"}),
+    ),
+    Case(
+        "A8 요일 병기 날짜(2026-07-01(수))",
+        "S13_날짜요일병기.xlsx",
+        "X1_단일시트.xlsx",
+        check_weekday_suffix,
+        aggregate=AggregationSpec(methods={"사용량": "sum", "온도": "mean"}),
+    ),
+    Case(
+        "A9 같은 날짜에 중복 기록(오전/오후)",
+        "S14_같은날짜중복.xlsx",
+        "X1_단일시트.xlsx",
+        check_duplicate_dates,
+        aggregate=AggregationSpec(methods={"사용량": "sum", "온도": "mean"}),
+    ),
+    Case(
+        "A10 단위 문자열·음수 혼재",
+        "S15_단위및음수.xlsx",
+        "X1_단일시트.xlsx",
+        check_units_and_negative,
+        aggregate=AggregationSpec(methods={"사용량": "sum", "전일대비": "mean"}),
+    ),
+    Case(
+        "A11 결측 없는 전체 31일",
+        "S19_전체31일.xlsx",
+        "X1_단일시트.xlsx",
+        check_full_month,
+        aggregate=AGG_BASIC,
+    ),
+    Case(
+        "A12 합계·작성자 행이 섞인 원본",
+        "S20_합계행혼재.xlsx",
+        "X1_단일시트.xlsx",
+        check_totals_row_skipped,
+        aggregate=AggregationSpec(methods={"사용량": "sum", "최대수요": "max"}),
     ),
     Case(
         "A5 주말 + 공휴일 제외",

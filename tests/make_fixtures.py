@@ -273,6 +273,71 @@ def word_9_textbox() -> str:
     return _save_doc(doc, "W9_텍스트상자.docx")
 
 
+def word_10_vertical_group_table() -> str:
+    """첫 열이 세로로 병합되어 항목을 묶는 표 (전력/환경 그룹 라벨)."""
+    doc = Document()
+    doc.add_heading("그룹 라벨 병합 표", level=1)
+
+    table = doc.add_table(rows=5, cols=3)
+    table.style = "Table Grid"
+    table.cell(0, 0).text = "구분"
+    table.cell(0, 1).text = "항목"
+    table.cell(0, 2).text = "값"
+
+    table.cell(1, 0).merge(table.cell(2, 0)).text = "전력"
+    table.cell(1, 1).text = "사용량"
+    table.cell(1, 2).text = "{{사용량}}"
+    table.cell(2, 1).text = "최대수요"
+    table.cell(2, 2).text = "{{최대수요}}"
+
+    table.cell(3, 0).merge(table.cell(4, 0)).text = "환경"
+    table.cell(3, 1).text = "온도"
+    table.cell(3, 2).text = "{{온도}}"
+    table.cell(4, 1).text = "비고"
+    table.cell(4, 2).text = "{{비고}}"
+    return _save_doc(doc, "W10_세로그룹표.docx")
+
+
+def word_11_bulleted_list() -> str:
+    """글머리 기호·번호 매기기 목록 안에 태그가 들어간 문서."""
+    doc = Document()
+    doc.add_heading("점검 결과 목록", level=1)
+    doc.add_paragraph(f"대상월: {{{{대상월}}}}")
+
+    for text in (
+        f"사용량: {{{{사용량}}}} kWh",
+        f"최대수요: {{{{최대수요}}}} kW",
+        f"평균온도: {{{{온도}}}} ℃",
+    ):
+        doc.add_paragraph(text, style="List Bullet")
+
+    for text in (
+        f"1차 확인 - 담당 {{{{담당자}}}}",
+        f"2차 확인 - 부서 {{{{부서}}}}",
+    ):
+        doc.add_paragraph(text, style="List Number")
+    return _save_doc(doc, "W11_글머리목록.docx")
+
+
+def word_12_split_runs() -> str:
+    """워드가 태그 글자를 여러 서식 조각(run)으로 쪼개 놓은 실제 상황 재현.
+
+    사람이 태그 일부만 볼드로 칠하거나 맞춤법 검사가 끼어들면, 워드는
+    ``{{사용량}}`` 을 ``{{`` / ``사용량`` / ``}}`` 처럼 서로 다른 run 으로
+    쪼개서 저장한다. docxtpl 의 patch_xml 단계가 이를 복구하는지 확인한다.
+    """
+    doc = Document()
+    doc.add_heading("run 분할 태그 시험", level=1)
+
+    paragraph = doc.add_paragraph()
+    paragraph.add_run("사용량은 {{")
+    bold_run = paragraph.add_run("사용량")
+    bold_run.bold = True
+    paragraph.add_run("}} kWh 이고, 최대수요는 {{최대")
+    paragraph.add_run("수요}} kW 입니다.")
+    return _save_doc(doc, "W12_런분할태그.docx")
+
+
 # =========================================================================== #
 # 엑셀 템플릿
 # =========================================================================== #
@@ -438,6 +503,64 @@ def excel_7_cell_coords() -> str:
     for index in range(1, 6):
         ws.cell(row=4, column=index).border = BOX
     return _save_wb(wb, "X7_셀좌표전용.xlsx")
+
+
+def excel_8_frozen_and_rules() -> str:
+    """틀 고정 + 조건부 서식 + 데이터 유효성이 함께 걸린 양식."""
+    from openpyxl.formatting.rule import CellIsRule
+    from openpyxl.worksheet.datavalidation import DataValidation
+
+    wb = Workbook()
+    ws = wb.active
+    ws.title = "점검표"
+    for index, name in enumerate(["항목", "값", "판정"], start=1):
+        cell = ws.cell(row=1, column=index, value=name)
+        cell.font = Font(bold=True)
+        cell.fill = HEAD_FILL
+    ws["A2"], ws["B2"] = "사용량", "{{사용량}}"
+    ws["A3"], ws["B3"] = "최대수요", "{{최대수요}}"
+    ws["A4"], ws["B4"] = "온도", "{{온도}}"
+    ws.freeze_panes = "A2"
+
+    ws.conditional_formatting.add(
+        "B2:B4",
+        CellIsRule(operator="greaterThan", formula=["1000"], fill=WARN_FILL),
+    )
+    validation = DataValidation(type="list", formula1='"정상,주의,점검필요"')
+    ws.add_data_validation(validation)
+    validation.add("C2:C4")
+    return _save_wb(wb, "X8_틀고정조건부서식.xlsx")
+
+
+def excel_9_seal_grid() -> str:
+    """결재란처럼 작은 셀들이 촘촘히 병합된 표 + 별도 위치의 태그."""
+    wb = Workbook()
+    ws = wb.active
+    ws.title = "기안문"
+    ws.merge_cells("A1:F1")
+    ws["A1"] = "지출 기안서"
+    ws["A1"].font = Font(size=13, bold=True)
+    ws["A1"].alignment = CENTER
+
+    # 결재란: 2행짜리 라벨 + 서명칸이 4명분, 각 칸은 세로 병합
+    labels = ["기안", "검토", "협조", "결재"]
+    for index, label in enumerate(labels):
+        col = index + 1
+        ws.merge_cells(start_row=3, start_column=col, end_row=3, end_column=col)
+        ws.cell(row=3, column=col, value=label).alignment = CENTER
+        ws.cell(row=3, column=col).fill = HEAD_FILL
+        ws.merge_cells(start_row=4, start_column=col, end_row=6, end_column=col)
+        cell = ws.cell(row=4, column=col)
+        cell.border = BOX
+        cell.alignment = Alignment(horizontal="center", vertical="top")
+
+    ws["A8"] = "대상월"
+    ws["B8"] = "{{대상월}}"
+    ws["A9"] = "기안자"
+    ws["B9"] = "{{담당자}}"
+    ws["A10"] = "금액"
+    ws["B10"] = "{{요금}}"
+    return _save_wb(wb, "X9_결재란병합.xlsx")
 
 
 # =========================================================================== #
@@ -639,6 +762,126 @@ def source_12_single_row() -> str:
     return _save_wb(wb, "S12_한행.xlsx", SOURCE_DIR)
 
 
+def source_13_weekday_suffix() -> str:
+    """'2026-01-05(월)' 처럼 날짜 뒤에 요일이 덧붙은 표기."""
+    wb = Workbook()
+    ws = wb.active
+    ws.title = "일별"
+    ws.append(["일자", "사용량", "온도"])
+    days = ["월", "화", "수", "목", "금", "토", "일"]
+    for day in range(1, 11):
+        date = _dt.date(2026, 7, day)
+        weekday = days[date.weekday()]
+        ws.append([f"2026-07-{day:02d}({weekday})", 200 + day, 19.0 + day * 0.1])
+    return _save_wb(wb, "S13_날짜요일병기.xlsx", SOURCE_DIR)
+
+
+def source_14_duplicate_dates() -> str:
+    """같은 날짜에 측정치가 여러 번 기록된 경우 (오전/오후 검침 등)."""
+    wb = Workbook()
+    ws = wb.active
+    ws.title = "검침"
+    ws.append(["일자", "구분", "사용량", "온도"])
+    for day in range(1, 6):
+        date = _dt.date(2026, 8, day)
+        ws.append([date, "오전", 50 + day, 22.0 + day * 0.1])
+        ws.append([date, "오후", 60 + day, 24.0 + day * 0.1])
+    return _save_wb(wb, "S14_같은날짜중복.xlsx", SOURCE_DIR)
+
+
+def source_15_units_and_negative() -> str:
+    """단위 붙은 문자열 숫자와 음수(증감률 등)가 섞인 표."""
+    wb = Workbook()
+    ws = wb.active
+    ws.title = "증감"
+    ws.append(["일자", "사용량", "전일대비"])
+    ws.append([_dt.date(2026, 9, 1), "1,250kWh", "-3.5%"])
+    ws.append([_dt.date(2026, 9, 2), "1,180kWh", "-5.6%"])
+    ws.append([_dt.date(2026, 9, 3), "1,320kWh", "11.9%"])
+    ws.append([_dt.date(2026, 9, 4), -15, "-101.1%"])  # 설비 이상으로 음수 발생
+    return _save_wb(wb, "S15_단위및음수.xlsx", SOURCE_DIR)
+
+
+def source_16_row_and_col_offset() -> str:
+    """제목 블록이 위쪽 여러 행을 차지하고, 표 자체도 왼쪽 여러 열을 비운 경우."""
+    wb = Workbook()
+    ws = wb.active
+    ws.title = "보고서"
+    ws["B2"] = "2026년 4분기 에너지 보고"
+    ws["B2"].font = Font(size=14, bold=True)
+    ws["B3"] = "작성부서: 시설관리팀"
+    ws["D6"] = "부서"
+    ws["E6"] = "사용량"
+    ws["F6"] = "최대수요"
+    rows = [("시설관리팀", 12500, 480), ("생산1팀", 30800, 910), ("생산2팀", 21450, 760)]
+    for offset, record in enumerate(rows, start=7):
+        for c_offset, value in enumerate(record):
+            ws.cell(row=offset, column=4 + c_offset, value=value)
+    return _save_wb(wb, "S16_행열오프셋.xlsx", SOURCE_DIR)
+
+
+def source_17_merged_in_body() -> str:
+    """데이터 본문 안에 병합 셀이 있는 경우 (부서명을 여러 날짜에 걸쳐 병합)."""
+    wb = Workbook()
+    ws = wb.active
+    ws.title = "부서별"
+    ws.append(["부서", "일자", "사용량"])
+    ws.merge_cells("A2:A4")
+    ws["A2"] = "시설관리팀"
+    for offset, day in enumerate((1, 2, 3), start=2):
+        ws.cell(row=offset, column=2, value=_dt.date(2026, 10, day))
+        ws.cell(row=offset, column=3, value=400 + day)
+    ws.merge_cells("A5:A6")
+    ws["A5"] = "생산1팀"
+    for offset, day in enumerate((1, 2), start=5):
+        ws.cell(row=offset, column=2, value=_dt.date(2026, 10, day))
+        ws.cell(row=offset, column=3, value=900 + day)
+    return _save_wb(wb, "S17_본문병합.xlsx", SOURCE_DIR)
+
+
+def source_18_uncalculated_formula() -> str:
+    """수식만 있고 '계산된 값' 캐시가 없는 원본 (프로그램이 만든 파일 등).
+
+    openpyxl 로 값을 채워 넣기만 하고 한 번도 엑셀/LibreOffice 로 열어
+    재계산하지 않은 상태를 그대로 재현한다. 이 파일은 '지원 불가' 케이스로,
+    FormulaCacheError 가 정확히 나는지 확인하는 용도다.
+    """
+    wb = Workbook()
+    ws = wb.active
+    ws.title = "수식원본"
+    ws.append(["일자", "기본", "부가", "합계"])
+    ws.append([_dt.date(2026, 11, 1), 100, 20, "=B2+C2"])
+    ws.append([_dt.date(2026, 11, 2), 110, 22, "=B3+C3"])
+    return _save_wb(wb, "S18_계산안된수식.xlsx", SOURCE_DIR)
+
+
+def source_19_full_month_no_gaps() -> str:
+    """결측 없이 31일이 전부 채워진 달 (정상 케이스 대조군)."""
+    wb = Workbook()
+    ws = wb.active
+    ws.title = "일별"
+    ws.append(["일자", "사용량", "최대수요", "온도"])
+    for day in range(1, 32):
+        ws.append([_dt.date(2026, 12, day), 300 + day, 90 + (day % 5), 10.0 + day * 0.05])
+    return _save_wb(wb, "S19_전체31일.xlsx", SOURCE_DIR)
+
+
+def source_20_totals_row_mixed() -> str:
+    """일단위 데이터 맨 아래에 '합계' 같은 요약 행이 섞여 있는 경우.
+
+    날짜로 읽히지 않는 행은 집계에서 자동 제외되어야 한다(스킵 카운트로 확인).
+    """
+    wb = Workbook()
+    ws = wb.active
+    ws.title = "일별"
+    ws.append(["일자", "사용량", "최대수요"])
+    for day in range(1, 6):
+        ws.append([_dt.date(2026, 5, day), 300 + day, 90 + day])
+    ws.append(["합계", 1515, ""])  # 요약 행: 날짜가 아니므로 집계에서 스킵되어야 함
+    ws.append(["작성자: 김하늘", "", ""])
+    return _save_wb(wb, "S20_합계행혼재.xlsx", SOURCE_DIR)
+
+
 # =========================================================================== #
 # 실행
 # =========================================================================== #
@@ -669,6 +912,9 @@ TEMPLATE_BUILDERS = [
     word_7_loop_table,
     word_8_hyphen_tag,
     word_9_textbox,
+    word_10_vertical_group_table,
+    word_11_bulleted_list,
+    word_12_split_runs,
     excel_1_single_sheet,
     excel_2_multi_sheet,
     excel_3_irregular,
@@ -676,6 +922,8 @@ TEMPLATE_BUILDERS = [
     excel_5_formula,
     excel_6_table_anchor,
     excel_7_cell_coords,
+    excel_8_frozen_and_rules,
+    excel_9_seal_grid,
 ]
 
 SOURCE_BUILDERS = [
@@ -691,6 +939,14 @@ SOURCE_BUILDERS = [
     source_10_dates_in_columns,
     source_11_many_rows,
     source_12_single_row,
+    source_13_weekday_suffix,
+    source_14_duplicate_dates,
+    source_15_units_and_negative,
+    source_16_row_and_col_offset,
+    source_17_merged_in_body,
+    source_18_uncalculated_formula,
+    source_19_full_month_no_gaps,
+    source_20_totals_row_mixed,
 ]
 
 

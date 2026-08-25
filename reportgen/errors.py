@@ -37,6 +37,15 @@ class HeaderError(ReportGenError):
     """헤더를 인식하지 못한 경우."""
 
 
+class FormulaCacheError(ReportGenError):
+    """수식 셀에 '계산된 값' 캐시가 없어 읽을 수 없는 경우.
+
+    엑셀 파일은 수식 자체와 별개로 마지막으로 계산된 결과값을 셀에 함께
+    저장해 둔다. 이 프로그램은 그 결과값만 읽으므로, 프로그램이 만들었거나
+    LibreOffice 등에서 재계산 없이 저장된 파일은 수식 칸이 비어 보인다.
+    """
+
+
 class MappingError(ReportGenError):
     """매핑이 비어 있거나 존재하지 않는 컬럼을 가리키는 경우."""
 

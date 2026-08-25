@@ -20,6 +20,7 @@ from reportgen.errors import (  # noqa: E402
     AggregationError,
     CellRangeError,
     FileFormatError,
+    FormulaCacheError,
     MappingError,
     ReportGenError,
     SheetNotFoundError,
@@ -108,6 +109,9 @@ def test_input_errors() -> None:
     daily = read_table(os.path.join(SOURCES, "S5_일단위_한달.xlsx"))
     expect(AggregationError, "제외 조건이 모든 행을 걸러낸 경우",
            lambda: aggregate_monthly(daily, AggregationSpec(only_months=["2099-01"])))
+
+    expect(FormulaCacheError, "원본에 계산되지 않은 수식이 있는 경우",
+           lambda: read_table(os.path.join(SOURCES, "S18_계산안된수식.xlsx")))
 
     expect(MappingError, "매핑이 원본에 없는 컬럼을 가리키는 경우",
            lambda: resolve_context(
