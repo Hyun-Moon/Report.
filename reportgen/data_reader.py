@@ -30,6 +30,7 @@ from .errors import (
     HeaderError,
     SheetNotFoundError,
 )
+from .formula_engine import FormulaEngine
 
 __all__ = [
     "Table",
@@ -294,36 +295,49 @@ def read_table(path: str, options: Optional[ReadOptions] = None) -> Table:
                 "셀 범위를 확인해 주세요.",
             )
 
+        table_warnings: list[str] = []
+        strict = not options.allow_uncalculated_formulas
+        unresolved: set[tuple[int, int]] = set()
+
+        # 캐시된 값이 없는 셀이 있으면, 간단한 수식(셀 참조 덧셈, SUM, IF 등)은
+        # 직접 계산해서 채운다. 계산기가 감당 못 하는 수식만 unresolved 로 남는다.
+        if any(v is None for row in grid for v in row):
+            formula_workbook = load_workbook(path, data_only=False, read_only=False)
+            try:
+                engine = FormulaEngine(sheet, formula_workbook[sheet.title], merged)
+                for r_index, row_values in enumerate(grid):
+                    for c_index, value in enumerate(row_values):
+                        if value is None:
+                            grid[r_index][c_index] = engine.get(row1 + r_index, col1 + c_index)
+                unresolved = engine.unresolved
+            finally:
+                formula_workbook.close()
+
         header_rows = max(1, int(options.header_rows or 1))
         if options.auto_detect and not options.cell_range:
             header_rows = _detect_header_rows(grid, header_rows)
         header_rows = min(header_rows, len(grid))
 
-        table_warnings: list[str] = []
-        strict = not options.allow_uncalculated_formulas
-
-        # 헤더 행 자체가 계산 안 된 수식이면(예: 하루씩 더해가는 날짜 헤더),
-        # 컬럼 이름을 만들기도 전에 걸러야 한다. 그러지 않으면 '열C', '열D'
-        # 같은 엉뚱한 이름이 오류 없이 조용히 생겨 버린다.
-        if any(v is None for row in grid[:header_rows] for v in row):
-            offenders = _find_uncached_formula_cells(
-                path, sheet.title, row1, col1, row1 + header_rows - 1, col2
-            )
-            if offenders:
+        # 헤더 행 자체를 계산기가 감당 못 했으면(예: 지원 안 하는 함수를 쓴
+        # 날짜 헤더), 컬럼 이름을 만들기도 전에 걸러야 한다. 그러지 않으면
+        # '열C', '열D' 같은 엉뚱한 이름이 오류 없이 조용히 생겨 버린다.
+        if unresolved:
+            header_offenders = _cells_in_range(unresolved, row1, col1, row1 + header_rows - 1, col2)
+            if header_offenders:
                 table_warnings.extend(
-                    _formula_cache_message(offenders, strict, context="헤더 행")
+                    _formula_cache_message(header_offenders, strict, context="헤더 행")
                 )
 
         columns = _build_columns(grid[:header_rows], col1)
         body = grid[header_rows:]
 
-        if any(v is None for row in body for v in row):
-            offenders = _find_uncached_formula_cells(
-                path, sheet.title, row1 + header_rows, col1, row2, col2
-            )
-            if offenders:
+        if unresolved:
+            body_offenders = _cells_in_range(unresolved, row1 + header_rows, col1, row2, col2)
+            if body_offenders:
                 table_warnings.extend(
-                    _formula_cache_message(offenders, strict, context="데이터", columns=columns, col1=col1)
+                    _formula_cache_message(
+                        body_offenders, strict, context="데이터", columns=columns, col1=col1
+                    )
                 )
 
         if options.skip_blank_rows:
@@ -360,30 +374,13 @@ def _open_workbook(path: str, data_only: bool):
         ) from exc
 
 
-def _find_uncached_formula_cells(
-    path: str, sheet_name: str, row1: int, col1: int, row2: int, col2: int
+def _cells_in_range(
+    unresolved: set[tuple[int, int]], row1: int, col1: int, row2: int, col2: int
 ) -> list[tuple[str, int, int]]:
-    """지정한 범위 안에서 '계산되지 않은 수식' 셀 좌표를 찾는다.
-
-    엑셀 파일은 수식과 별개로 마지막 계산 결과를 셀에 캐시해 둔다. 이
-    프로그램은 그 캐시만 읽으므로(``data_only=True``), 프로그램이 만들었거나
-    LibreOffice 등에서 재계산 없이 저장된 파일은 수식 칸이 조용히 빈 값으로
-    읽힌다. 집계가 슬쩍 틀어지는 것보다는 여기서 바로 알려주는 편이 안전하다.
-
-    ``(좌표문자열, 행, 열)`` 목록을 돌려준다.
-    """
-    workbook = load_workbook(path, data_only=False, read_only=False)
-    try:
-        sheet = workbook[sheet_name]
-        offenders: list[tuple[str, int, int]] = []
-        for r in range(row1, row2 + 1):
-            for c in range(col1, col2 + 1):
-                cell = sheet.cell(row=r, column=c)
-                if cell.data_type == "f":
-                    offenders.append((cell.coordinate, r, c))
-        return offenders
-    finally:
-        workbook.close()
+    """계산기가 포기한 셀 좌표 중, 지정한 사각 범위 안에 있는 것만 골라낸다."""
+    hits = [(r, c) for r, c in unresolved if row1 <= r <= row2 and col1 <= c <= col2]
+    hits.sort()
+    return [(f"{get_column_letter(c)}{r}", r, c) for r, c in hits]
 
 
 def _formula_cache_message(

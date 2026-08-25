@@ -8,6 +8,7 @@
 from __future__ import annotations
 
 import ast
+import datetime as _dt
 import os
 import sys
 import tempfile
@@ -110,8 +111,8 @@ def test_input_errors() -> None:
     expect(AggregationError, "제외 조건이 모든 행을 걸러낸 경우",
            lambda: aggregate_monthly(daily, AggregationSpec(only_months=["2099-01"])))
 
-    expect(FormulaCacheError, "원본에 계산되지 않은 수식이 있는 경우",
-           lambda: read_table(os.path.join(SOURCES, "S18_계산안된수식.xlsx")))
+    expect(FormulaCacheError, "계산기가 못 푸는 수식(시트 간 참조)에 캐시도 없는 경우",
+           lambda: read_table(os.path.join(SOURCES, "S23_미지원수식.xlsx"), ReadOptions(sheet_name="본표")))
 
     expect(MappingError, "매핑이 원본에 없는 컬럼을 가리키는 경우",
            lambda: resolve_context(
@@ -127,50 +128,70 @@ def test_input_errors() -> None:
     os.unlink(text_file)
 
 
-def test_formula_cache_bypass() -> None:
-    """원본을 재계산할 수 없을 때, 빈 값으로 넘어가는 우회 옵션이 조용히 넘어가지 않는지."""
-    print("\n[계산 안 된 수식 - 우회 옵션]")
+def test_formula_engine_computes_simple_formulas() -> None:
+    """계산 캐시가 없어도, 계산기가 풀 수 있는 수식은 오류 없이 값을 채운다.
+
+    ``=B2+C2`` 처럼 캐시가 없는 단순 수식은 이제 FormulaCacheError 를 내는
+    대신 내장 계산기가 직접 계산해서 정상적인 표로 읽혀야 한다.
+    """
+    print("\n[계산 캐시 없는 단순 수식 - 내장 계산기가 직접 계산]")
     path = os.path.join(SOURCES, "S18_계산안된수식.xlsx")
-    table = read_table(path, ReadOptions(allow_uncalculated_formulas=True))
-    ok = bool(table.warnings) and table.rows[0][-1] is None
-    label = "우회 옵션을 켜면 오류 대신 경고 + 빈 값으로 진행됨"
+    table = read_table(path)
+    ok = not table.warnings and table.rows == [
+        [_dt.datetime(2026, 11, 1), 100, 20, 120],
+        [_dt.datetime(2026, 11, 2), 110, 22, 132],
+    ]
+    label = "'=B2+C2' 캐시 없어도 오류 없이 120/132 로 정확히 계산됨"
+    if ok:
+        print(f"  OK   {label}")
+    else:
+        FAILURES.append(label)
+        print(f"  FAIL {label}: warnings={table.warnings}, rows={table.rows}")
+
+
+def test_header_formula_engine() -> None:
+    """헤더 행 자체가 계산 안 된 수식이어도, 계산기가 풀 수 있으면 정상 채움.
+
+    본문 셀만 검사하던 예전 로직은 이 경우를 놓쳐서 '열C' 같은 엉뚱한
+    컬럼 이름을 조용히 만들었었다. 실제 사용자의 '날짜가 가로로 늘어선 표'
+    화면에서 발견된 패턴(하루씩 더하는 수식 헤더)으로 검증한다.
+    """
+    print("\n[헤더 행 자체가 계산 안 된 수식인 경우 - 계산기로 직접 계산]")
+    path = os.path.join(SOURCES, "S22_헤더수식미계산.xlsx")
+    options = ReadOptions(cell_range="B3:H3", header_rows=1, auto_detect=False)
+    table = read_table(path, options)
+    ok = not table.warnings and table.columns == [
+        "2026-07-01", "2026-07-02", "2026-07-03", "2026-07-04",
+        "2026-07-05", "2026-07-06", "2026-07-07",
+    ]
+    label = "하루씩 더하는 날짜 헤더가 '열C' 대신 실제 날짜로 계산됨"
+    if ok:
+        print(f"  OK   {label}")
+        print(f"         -> {table.columns}")
+    else:
+        FAILURES.append(label)
+        print(f"  FAIL {label}: warnings={table.warnings}, columns={table.columns}")
+
+
+def test_formula_engine_bypass_for_unsupported() -> None:
+    """계산기가 못 푸는 수식(시트 간 참조 등)은 여전히 안전하게 걸러진다.
+
+    기본은 오류, '빈 값으로 넘어가기' 옵션을 켜면 경고 + 빈 값으로 진행.
+    """
+    print("\n[계산기가 못 푸는 수식 - 우회 옵션]")
+    path = os.path.join(SOURCES, "S23_미지원수식.xlsx")
+    options = ReadOptions(sheet_name="본표", allow_uncalculated_formulas=True)
+    table = read_table(path, options)
+    ok = bool(table.warnings) and table.rows[0][-1] is None and table.rows[0][:2] == [
+        _dt.datetime(2026, 12, 1), 100,
+    ]
+    label = "우회 옵션: 시트 간 참조는 경고 + 빈 값, 나머지 컬럼은 정상"
     if ok:
         print(f"  OK   {label}")
         print(f"         -> {table.warnings[0]}")
     else:
         FAILURES.append(label)
         print(f"  FAIL {label}: warnings={table.warnings}, rows={table.rows}")
-
-
-def test_header_formula_cache() -> None:
-    """헤더 행 자체가 계산 안 된 수식이면, 조용히 '열C' 같은 이름이 되지 않는지.
-
-    본문 셀만 검사하던 예전 로직은 이 경우를 놓쳤다 — 오류도 경고도 없이
-    엉뚱한 컬럼 이름이 만들어졌다. 실제 사용자의 '날짜가 가로로 늘어선 표'
-    화면에서 발견된 패턴(하루씩 더하는 수식 헤더)으로 검증한다.
-    """
-    print("\n[헤더 행 자체가 계산 안 된 수식인 경우]")
-    path = os.path.join(SOURCES, "S22_헤더수식미계산.xlsx")
-    options = ReadOptions(cell_range="B3:H3", header_rows=1, auto_detect=False)
-
-    expect(
-        FormulaCacheError,
-        "기본값(엄격): 헤더 행 수식 미계산 시 오류",
-        lambda: read_table(path, options),
-    )
-
-    bypassed = ReadOptions(
-        cell_range="B3:H3", header_rows=1, auto_detect=False, allow_uncalculated_formulas=True
-    )
-    table = read_table(path, bypassed)
-    ok = bool(table.warnings) and "헤더" in table.warnings[0] and table.columns[1] == "열C"
-    label = "우회 옵션: 헤더도 경고 + 빈칸으로 넘어감 (컬럼명은 자동 생성됨)"
-    if ok:
-        print(f"  OK   {label}")
-        print(f"         -> {table.warnings[0]}")
-    else:
-        FAILURES.append(label)
-        print(f"  FAIL {label}: warnings={table.warnings}, columns={table.columns}")
 
 
 def test_table_block_detection() -> None:
@@ -293,8 +314,9 @@ def test_no_network() -> None:
 
 def main() -> int:
     test_input_errors()
-    test_formula_cache_bypass()
-    test_header_formula_cache()
+    test_formula_engine_computes_simple_formulas()
+    test_header_formula_engine()
+    test_formula_engine_bypass_for_unsupported()
     test_table_block_detection()
     test_graceful_paths()
     test_no_network()

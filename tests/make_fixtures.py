@@ -843,8 +843,9 @@ def source_18_uncalculated_formula() -> str:
     """수식만 있고 '계산된 값' 캐시가 없는 원본 (프로그램이 만든 파일 등).
 
     openpyxl 로 값을 채워 넣기만 하고 한 번도 엑셀/LibreOffice 로 열어
-    재계산하지 않은 상태를 그대로 재현한다. 이 파일은 '지원 불가' 케이스로,
-    FormulaCacheError 가 정확히 나는지 확인하는 용도다.
+    재계산하지 않은 상태를 그대로 재현한다. 여기 쓰인 ``=B2+C2`` 는 내장
+    수식 계산기가 직접 계산할 수 있는 범위라, 이제는 오류 없이 정상 값이
+    나와야 한다 (FormulaCacheError 는 계산기가 못 푸는 수식에서만 난다).
     """
     wb = Workbook()
     ws = wb.active
@@ -932,8 +933,8 @@ def source_22_uncalculated_header_formula() -> str:
 
     대형빌딩 에너지 대장에서 실제로 나타난 패턴: 맨 왼쪽 날짜 하나만 값이고
     나머지는 ``=B3+1`` 식으로 하루씩 더하는 수식에 'd일 요일' 표시형식을
-    입힌 것. 프로그램이 만들었거나 재계산 없이 저장되면, 이 헤더 행 자체가
-    계산 안 된 수식이 되어 컬럼 이름을 만들 수 없게 된다.
+    입힌 것. 내장 수식 계산기가 이런 연쇄 덧셈은 직접 계산하므로, 이제는
+    헤더 행이 정상적인 날짜로 채워져야 한다.
     """
     wb = Workbook()
     ws = wb.active
@@ -947,6 +948,24 @@ def source_22_uncalculated_header_formula() -> str:
         cell.number_format = 'd"일" aaa'
     ws["A2"] = "일자"
     return _save_wb(wb, "S22_헤더수식미계산.xlsx", SOURCE_DIR)
+
+
+def source_23_unsupported_formula() -> str:
+    """내장 계산기가 못 푸는 수식(다른 시트를 참조)에 계산 캐시도 없는 경우.
+
+    시트 간 참조, VLOOKUP 류의 복잡한 함수, 배열 수식처럼 계산기의 지원
+    범위 밖인 수식은 여전히 FormulaCacheError 로 안전하게 걸러야 한다.
+    """
+    wb = Workbook()
+    summary = wb.active
+    summary.title = "요약"
+    summary["A1"] = 999
+
+    ws = wb.create_sheet("본표")
+    ws.append(["일자", "기본", "요약값"])
+    ws.append([_dt.date(2026, 12, 1), 100, "=요약!A1"])  # 시트 간 참조: 계산기 범위 밖
+    ws.append([_dt.date(2026, 12, 2), 110, "=요약!A1"])
+    return _save_wb(wb, "S23_미지원수식.xlsx", SOURCE_DIR)
 
 
 # =========================================================================== #
@@ -1016,6 +1035,7 @@ SOURCE_BUILDERS = [
     source_20_totals_row_mixed,
     source_21_multi_block_sheet,
     source_22_uncalculated_header_formula,
+    source_23_unsupported_formula,
 ]
 
 
