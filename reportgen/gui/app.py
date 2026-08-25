@@ -182,6 +182,20 @@ class ReportApp(ttk.Frame):
             line2, text="행/열 바꿔 읽기 (날짜가 가로로 늘어선 표)", variable=self.transpose
         ).pack(side="left", padx=(20, 0))
 
+        line3 = ttk.Frame(options)
+        line3.pack(fill="x", pady=2)
+        self.allow_uncalculated = tk.BooleanVar(value=False)
+        ttk.Checkbutton(
+            line3,
+            text="계산되지 않은 수식 셀은 빈 값으로 넘어가기 (평소엔 끄세요)",
+            variable=self.allow_uncalculated,
+        ).pack(side="left")
+        ttk.Label(
+            line3,
+            text="※ 원본을 엑셀에서 다시 열어 저장할 수 없을 때만 켜세요. 해당 값은 집계에서 빠집니다.",
+            foreground="#a60",
+        ).pack(side="left", padx=(6, 0))
+
         buttons = ttk.Frame(frame)
         buttons.pack(fill="x", pady=(8, 0))
         ttk.Button(buttons, text="데이터 읽기", command=self._load_source).pack(side="left")
@@ -225,6 +239,7 @@ class ReportApp(ttk.Frame):
             header_rows=max(1, int(self.header_rows.get() or 1)),
             auto_detect=self.auto_detect.get(),
             transpose=self.transpose.get(),
+            allow_uncalculated_formulas=self.allow_uncalculated.get(),
         )
 
     def _load_source(self) -> None:
@@ -242,7 +257,11 @@ class ReportApp(ttk.Frame):
         self.overrides = {}
         self.src_preview.load_matrix(table.preview(200), max_rows=200)
         self.src_info.set(f"컬럼 {len(table.columns)}개 · 데이터 {table.n_rows}행")
-        self._say("원본을 읽었습니다. 2단계에서 템플릿을 고르세요.")
+        if table.warnings:
+            messagebox.showwarning("주의", "\n\n".join(table.warnings))
+            self._say("원본을 읽었습니다 (일부 값을 빈 값으로 건너뜀). 2단계로 진행하세요.")
+        else:
+            self._say("원본을 읽었습니다. 2단계에서 템플릿을 고르세요.")
         self._set_step_enabled(2)
         self._refresh_aggregation_inputs()
 

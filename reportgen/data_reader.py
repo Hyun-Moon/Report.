@@ -51,6 +51,8 @@ class Table:
     rows: list[list[Any]] = field(default_factory=list)
     sheet_name: str = ""
     source_path: str = ""
+    #: 읽는 과정에서 사용자에게 알려야 할 안내 (예: 계산 안 된 수식을 빈 값으로 넘김)
+    warnings: list[str] = field(default_factory=list)
 
     def __post_init__(self) -> None:
         self.columns = _dedupe(self.columns)
@@ -114,6 +116,10 @@ class ReadOptions:
     auto_detect: bool = True
     transpose: bool = False
     skip_blank_rows: bool = True
+    #: True 면 계산되지 않은 수식 셀을 오류 대신 빈 값으로 처리하고 넘어간다.
+    #: (원본을 엑셀로 열어 재계산할 수 없는 상황을 위한 탈출구. 기본은 False —
+    #: 그 값들이 조용히 빈칸/0 으로 집계될 수 있으므로 사용자가 직접 켜야 한다.)
+    allow_uncalculated_formulas: bool = False
 
 
 # --------------------------------------------------------------------------- #
@@ -180,13 +186,22 @@ def read_table(path: str, options: Optional[ReadOptions] = None) -> Table:
         columns = _build_columns(grid[:header_rows], col1)
         body = grid[header_rows:]
 
+        table_warnings: list[str] = []
         if any(v is None for row in body for v in row):
-            _check_formula_cache(path, sheet.title, row1 + header_rows, col1, row2, columns)
+            table_warnings = _check_formula_cache(
+                path,
+                sheet.title,
+                row1 + header_rows,
+                col1,
+                row2,
+                columns,
+                strict=not options.allow_uncalculated_formulas,
+            )
 
         if options.skip_blank_rows:
             body = [row for row in body if any(_is_filled(v) for v in row)]
 
-        table = Table(columns, body, sheet.title, os.path.abspath(path))
+        table = Table(columns, body, sheet.title, os.path.abspath(path), warnings=table_warnings)
         if options.transpose:
             table = table.transposed()
         return table
@@ -218,14 +233,24 @@ def _open_workbook(path: str, data_only: bool):
 
 
 def _check_formula_cache(
-    path: str, sheet_name: str, body_start_row: int, col1: int, row2: int, columns: list[str]
-) -> None:
+    path: str,
+    sheet_name: str,
+    body_start_row: int,
+    col1: int,
+    row2: int,
+    columns: list[str],
+    strict: bool = True,
+) -> list[str]:
     """빈 칸 중에 '계산되지 않은 수식'이 섞여 있으면 미리 알려준다.
 
     엑셀 파일은 수식과 별개로 마지막 계산 결과를 셀에 캐시해 둔다. 이
     프로그램은 그 캐시만 읽으므로(``data_only=True``), 프로그램이 만들었거나
     LibreOffice 등에서 재계산 없이 저장된 파일은 수식 칸이 조용히 빈 값으로
     읽힌다. 집계가 슬쩍 틀어지는 것보다는 여기서 바로 알려주는 편이 안전하다.
+
+    ``strict=False`` 면 (원본을 다시 계산할 방법이 없는 경우를 위한 탈출구)
+    오류를 내는 대신 그 칸들을 빈 값으로 두고 넘어가되, 어디를 건너뛰었는지
+    경고 문구 목록으로 돌려준다 — 조용히 넘어가지는 않는다.
     """
     workbook = load_workbook(path, data_only=False, read_only=False)
     try:
@@ -236,14 +261,21 @@ def _check_formula_cache(
                 cell = sheet.cell(row=r, column=col1 + c_index)
                 if cell.data_type == "f":
                     offenders.append(f"{name} ({cell.coordinate})")
-        if offenders:
-            preview = ", ".join(offenders[:5])
-            more = f" 외 {len(offenders) - 5}건" if len(offenders) > 5 else ""
+        if not offenders:
+            return []
+
+        preview = ", ".join(offenders[:5])
+        more = f" 외 {len(offenders) - 5}건" if len(offenders) > 5 else ""
+        if strict:
             raise FormulaCacheError(
                 "원본 엑셀에 계산되지 않은 수식 셀이 있어 값을 읽을 수 없습니다.",
                 f"엑셀(또는 한셀/LibreOffice Calc 등)에서 파일을 한 번 열어 저장한 뒤 "
                 f"다시 시도해 주세요. 문제 위치: {preview}{more}",
             )
+        return [
+            f"계산되지 않은 수식 셀 {len(offenders)}개를 빈 값으로 두고 넘어갔습니다. "
+            f"해당 항목은 집계에서 빠집니다. 문제 위치: {preview}{more}"
+        ]
     finally:
         workbook.close()
 

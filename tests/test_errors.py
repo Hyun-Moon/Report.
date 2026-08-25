@@ -127,6 +127,21 @@ def test_input_errors() -> None:
     os.unlink(text_file)
 
 
+def test_formula_cache_bypass() -> None:
+    """원본을 재계산할 수 없을 때, 빈 값으로 넘어가는 우회 옵션이 조용히 넘어가지 않는지."""
+    print("\n[계산 안 된 수식 - 우회 옵션]")
+    path = os.path.join(SOURCES, "S18_계산안된수식.xlsx")
+    table = read_table(path, ReadOptions(allow_uncalculated_formulas=True))
+    ok = bool(table.warnings) and table.rows[0][-1] is None
+    label = "우회 옵션을 켜면 오류 대신 경고 + 빈 값으로 진행됨"
+    if ok:
+        print(f"  OK   {label}")
+        print(f"         -> {table.warnings[0]}")
+    else:
+        FAILURES.append(label)
+        print(f"  FAIL {label}: warnings={table.warnings}, rows={table.rows}")
+
+
 def test_graceful_paths() -> None:
     """오류가 '나면 안 되는' 경우들."""
     print("\n[예외 없이 넘어가야 하는 경우]")
@@ -207,6 +222,7 @@ def test_no_network() -> None:
 
 def main() -> int:
     test_input_errors()
+    test_formula_cache_bypass()
     test_graceful_paths()
     test_no_network()
     print()

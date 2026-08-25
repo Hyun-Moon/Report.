@@ -84,6 +84,7 @@ def prepare(request: GenerationRequest) -> Prepared:
     """읽기 + 집계 + 템플릿 스캔까지만 수행한다 (파일은 만들지 않는다)."""
     warnings: list[str] = []
     table = read_table(request.source_path, request.read_options)
+    warnings.extend(table.warnings)
     if not table.rows:
         warnings.append("원본 표에서 데이터 행을 찾지 못했습니다. 셀 범위를 확인해 주세요.")
 
