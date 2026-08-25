@@ -299,20 +299,32 @@ def read_table(path: str, options: Optional[ReadOptions] = None) -> Table:
             header_rows = _detect_header_rows(grid, header_rows)
         header_rows = min(header_rows, len(grid))
 
+        table_warnings: list[str] = []
+        strict = not options.allow_uncalculated_formulas
+
+        # 헤더 행 자체가 계산 안 된 수식이면(예: 하루씩 더해가는 날짜 헤더),
+        # 컬럼 이름을 만들기도 전에 걸러야 한다. 그러지 않으면 '열C', '열D'
+        # 같은 엉뚱한 이름이 오류 없이 조용히 생겨 버린다.
+        if any(v is None for row in grid[:header_rows] for v in row):
+            offenders = _find_uncached_formula_cells(
+                path, sheet.title, row1, col1, row1 + header_rows - 1, col2
+            )
+            if offenders:
+                table_warnings.extend(
+                    _formula_cache_message(offenders, strict, context="헤더 행")
+                )
+
         columns = _build_columns(grid[:header_rows], col1)
         body = grid[header_rows:]
 
-        table_warnings: list[str] = []
         if any(v is None for row in body for v in row):
-            table_warnings = _check_formula_cache(
-                path,
-                sheet.title,
-                row1 + header_rows,
-                col1,
-                row2,
-                columns,
-                strict=not options.allow_uncalculated_formulas,
+            offenders = _find_uncached_formula_cells(
+                path, sheet.title, row1 + header_rows, col1, row2, col2
             )
+            if offenders:
+                table_warnings.extend(
+                    _formula_cache_message(offenders, strict, context="데이터", columns=columns, col1=col1)
+                )
 
         if options.skip_blank_rows:
             body = [row for row in body if any(_is_filled(v) for v in row)]
@@ -348,52 +360,63 @@ def _open_workbook(path: str, data_only: bool):
         ) from exc
 
 
-def _check_formula_cache(
-    path: str,
-    sheet_name: str,
-    body_start_row: int,
-    col1: int,
-    row2: int,
-    columns: list[str],
-    strict: bool = True,
-) -> list[str]:
-    """빈 칸 중에 '계산되지 않은 수식'이 섞여 있으면 미리 알려준다.
+def _find_uncached_formula_cells(
+    path: str, sheet_name: str, row1: int, col1: int, row2: int, col2: int
+) -> list[tuple[str, int, int]]:
+    """지정한 범위 안에서 '계산되지 않은 수식' 셀 좌표를 찾는다.
 
     엑셀 파일은 수식과 별개로 마지막 계산 결과를 셀에 캐시해 둔다. 이
     프로그램은 그 캐시만 읽으므로(``data_only=True``), 프로그램이 만들었거나
     LibreOffice 등에서 재계산 없이 저장된 파일은 수식 칸이 조용히 빈 값으로
     읽힌다. 집계가 슬쩍 틀어지는 것보다는 여기서 바로 알려주는 편이 안전하다.
 
-    ``strict=False`` 면 (원본을 다시 계산할 방법이 없는 경우를 위한 탈출구)
-    오류를 내는 대신 그 칸들을 빈 값으로 두고 넘어가되, 어디를 건너뛰었는지
-    경고 문구 목록으로 돌려준다 — 조용히 넘어가지는 않는다.
+    ``(좌표문자열, 행, 열)`` 목록을 돌려준다.
     """
     workbook = load_workbook(path, data_only=False, read_only=False)
     try:
         sheet = workbook[sheet_name]
-        offenders: list[str] = []
-        for r in range(body_start_row, row2 + 1):
-            for c_index, name in enumerate(columns):
-                cell = sheet.cell(row=r, column=col1 + c_index)
+        offenders: list[tuple[str, int, int]] = []
+        for r in range(row1, row2 + 1):
+            for c in range(col1, col2 + 1):
+                cell = sheet.cell(row=r, column=c)
                 if cell.data_type == "f":
-                    offenders.append(f"{name} ({cell.coordinate})")
-        if not offenders:
-            return []
-
-        preview = ", ".join(offenders[:5])
-        more = f" 외 {len(offenders) - 5}건" if len(offenders) > 5 else ""
-        if strict:
-            raise FormulaCacheError(
-                "원본 엑셀에 계산되지 않은 수식 셀이 있어 값을 읽을 수 없습니다.",
-                f"엑셀(또는 한셀/LibreOffice Calc 등)에서 파일을 한 번 열어 저장한 뒤 "
-                f"다시 시도해 주세요. 문제 위치: {preview}{more}",
-            )
-        return [
-            f"계산되지 않은 수식 셀 {len(offenders)}개를 빈 값으로 두고 넘어갔습니다. "
-            f"해당 항목은 집계에서 빠집니다. 문제 위치: {preview}{more}"
-        ]
+                    offenders.append((cell.coordinate, r, c))
+        return offenders
     finally:
         workbook.close()
+
+
+def _formula_cache_message(
+    offenders: list[tuple[str, int, int]],
+    strict: bool,
+    context: str,
+    columns: Optional[list[str]] = None,
+    col1: Optional[int] = None,
+) -> list[str]:
+    """계산 안 된 수식 셀 목록을 사람이 읽을 메시지로 만든다.
+
+    ``strict=True`` 면 :class:`FormulaCacheError` 를 그대로 던진다.
+    ``strict=False`` 면 (원본을 다시 계산할 방법이 없는 경우를 위한 탈출구)
+    오류 대신 경고 문구 목록을 돌려주고, 그 칸들은 빈 값으로 두고 진행한다 —
+    조용히 넘어가지는 않는다.
+    """
+    if columns is not None and col1 is not None:
+        labels = [f"{columns[c - col1]} ({coord})" for coord, _r, c in offenders]
+    else:
+        labels = [coord for coord, _r, _c in offenders]
+
+    preview = ", ".join(labels[:5])
+    more = f" 외 {len(labels) - 5}건" if len(labels) > 5 else ""
+    if strict:
+        raise FormulaCacheError(
+            f"원본 엑셀의 {context}에 계산되지 않은 수식 셀이 있어 값을 읽을 수 없습니다.",
+            f"엑셀(또는 한셀/LibreOffice Calc 등)에서 파일을 한 번 열어 저장한 뒤 "
+            f"다시 시도해 주세요. 문제 위치: {preview}{more}",
+        )
+    return [
+        f"{context}의 계산되지 않은 수식 셀 {len(labels)}개를 빈 값으로 두고 넘어갔습니다. "
+        f"해당 항목은 집계에서 빠집니다. 문제 위치: {preview}{more}"
+    ]
 
 
 def _pick_sheet(workbook, sheet_name: Optional[str], path: str):

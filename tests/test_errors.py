@@ -142,6 +142,37 @@ def test_formula_cache_bypass() -> None:
         print(f"  FAIL {label}: warnings={table.warnings}, rows={table.rows}")
 
 
+def test_header_formula_cache() -> None:
+    """헤더 행 자체가 계산 안 된 수식이면, 조용히 '열C' 같은 이름이 되지 않는지.
+
+    본문 셀만 검사하던 예전 로직은 이 경우를 놓쳤다 — 오류도 경고도 없이
+    엉뚱한 컬럼 이름이 만들어졌다. 실제 사용자의 '날짜가 가로로 늘어선 표'
+    화면에서 발견된 패턴(하루씩 더하는 수식 헤더)으로 검증한다.
+    """
+    print("\n[헤더 행 자체가 계산 안 된 수식인 경우]")
+    path = os.path.join(SOURCES, "S22_헤더수식미계산.xlsx")
+    options = ReadOptions(cell_range="B3:H3", header_rows=1, auto_detect=False)
+
+    expect(
+        FormulaCacheError,
+        "기본값(엄격): 헤더 행 수식 미계산 시 오류",
+        lambda: read_table(path, options),
+    )
+
+    bypassed = ReadOptions(
+        cell_range="B3:H3", header_rows=1, auto_detect=False, allow_uncalculated_formulas=True
+    )
+    table = read_table(path, bypassed)
+    ok = bool(table.warnings) and "헤더" in table.warnings[0] and table.columns[1] == "열C"
+    label = "우회 옵션: 헤더도 경고 + 빈칸으로 넘어감 (컬럼명은 자동 생성됨)"
+    if ok:
+        print(f"  OK   {label}")
+        print(f"         -> {table.warnings[0]}")
+    else:
+        FAILURES.append(label)
+        print(f"  FAIL {label}: warnings={table.warnings}, columns={table.columns}")
+
+
 def test_table_block_detection() -> None:
     """한 시트에 표가 여러 개 섞여 있을 때, 후보를 정확히 나누는지 확인.
 
@@ -263,6 +294,7 @@ def test_no_network() -> None:
 def main() -> int:
     test_input_errors()
     test_formula_cache_bypass()
+    test_header_formula_cache()
     test_table_block_detection()
     test_graceful_paths()
     test_no_network()

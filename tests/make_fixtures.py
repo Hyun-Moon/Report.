@@ -927,6 +927,28 @@ def source_21_multi_block_sheet() -> str:
     return _save_wb(wb, "S21_다중표시트.xlsx", SOURCE_DIR)
 
 
+def source_22_uncalculated_header_formula() -> str:
+    """날짜 헤더가 '하루씩 더하는 수식'인데 계산된 값이 없는 경우.
+
+    대형빌딩 에너지 대장에서 실제로 나타난 패턴: 맨 왼쪽 날짜 하나만 값이고
+    나머지는 ``=B3+1`` 식으로 하루씩 더하는 수식에 'd일 요일' 표시형식을
+    입힌 것. 프로그램이 만들었거나 재계산 없이 저장되면, 이 헤더 행 자체가
+    계산 안 된 수식이 되어 컬럼 이름을 만들 수 없게 된다.
+    """
+    wb = Workbook()
+    ws = wb.active
+    ws.title = "일지"
+    ws["B3"] = _dt.date(2026, 7, 1)
+    ws["B3"].number_format = 'd"일" aaa'
+    for col in range(3, 9):  # C~H: 하루씩 더하는 수식 (계산 캐시 없음)
+        letter = chr(ord("A") + col - 1)
+        prev_letter = chr(ord("A") + col - 2)
+        cell = ws.cell(row=3, column=col, value=f"={prev_letter}3+1")
+        cell.number_format = 'd"일" aaa'
+    ws["A2"] = "일자"
+    return _save_wb(wb, "S22_헤더수식미계산.xlsx", SOURCE_DIR)
+
+
 # =========================================================================== #
 # 실행
 # =========================================================================== #
@@ -993,6 +1015,7 @@ SOURCE_BUILDERS = [
     source_19_full_month_no_gaps,
     source_20_totals_row_mixed,
     source_21_multi_block_sheet,
+    source_22_uncalculated_header_formula,
 ]
 
 
