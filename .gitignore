@@ -1,0 +1,19 @@
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+venv/
+
+# 빌드 산출물
+build/
+dist/
+*.spec.bak
+
+# 실행 중 생기는 것들
+output/*
+!output/.gitkeep
+mappings/*.json
+tests/fixtures/
+
+# 오피스 임시 파일
+~$*

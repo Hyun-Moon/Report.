@@ -1,0 +1,17 @@
+# 사내 보고서 자동 생성기 - 필요한 패키지
+#
+# tkinter 는 파이썬에 기본 포함되어 있으므로 여기 없다.
+# (리눅스에서만 별도 설치가 필요할 수 있다: sudo apt install python3-tk)
+#
+# 관리자 권한이 없는 사내 PC라면 사용자 폴더에만 설치하면 된다:
+#     pip install --user -r requirements.txt
+# 인터넷이 막힌 망이라면 휠(.whl) 파일을 미리 받아 두고:
+#     pip install --no-index --find-links=wheels -r requirements.txt
+
+openpyxl>=3.1          # 엑셀 읽기/쓰기 (서식·수식 보존)
+python-docx>=1.1       # 워드 문서 구조 탐색 (태그 스캔)
+docxtpl>=0.16          # 워드 템플릿 렌더링
+# jinja2 는 docxtpl 이 함께 설치한다.
+
+# pandas 는 쓰지 않는다. 표 읽기는 openpyxl 로 직접 처리하므로
+# exe 용량과 설치 부담을 줄이기 위해 의존성에서 뺐다.
