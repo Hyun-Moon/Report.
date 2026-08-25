@@ -30,8 +30,12 @@ def main() -> int:
 
     if step("샘플 원본·템플릿 생성", ["tests/make_fixtures.py"]) != 0:
         failures.append("샘플 생성")
+    if step("에너지 도메인 샘플 생성", ["tests/make_energy_fixtures.py"]) != 0:
+        failures.append("에너지 샘플 생성")
     if step("양식 커버리지 검증", ["tests/test_matrix.py"]) != 0:
         failures.append("양식 커버리지")
+    if step("에너지 도메인 문서 검증", ["tests/test_energy_matrix.py"]) != 0:
+        failures.append("에너지 도메인 문서")
     if step("예외 처리 / 로컬 동작 검증", ["tests/test_errors.py"]) != 0:
         failures.append("예외 처리")
     if want_gui and step("GUI 스모크 테스트", ["tests/test_gui_smoke.py"]) != 0:
