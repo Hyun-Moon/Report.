@@ -950,11 +950,11 @@ def source_22_uncalculated_header_formula() -> str:
     return _save_wb(wb, "S22_헤더수식미계산.xlsx", SOURCE_DIR)
 
 
-def source_23_unsupported_formula() -> str:
-    """내장 계산기가 못 푸는 수식(다른 시트를 참조)에 계산 캐시도 없는 경우.
+def source_23_cross_sheet_formula() -> str:
+    """다른 시트를 참조하는 수식에 계산 캐시가 없는 경우.
 
-    시트 간 참조, VLOOKUP 류의 복잡한 함수, 배열 수식처럼 계산기의 지원
-    범위 밖인 수식은 여전히 FormulaCacheError 로 안전하게 걸러야 한다.
+    ``formulas`` 패키지 기반 계산기는 워크북 전체를 계산 그래프로 만들기
+    때문에, 시트 간 참조도 정상적으로 계산되어야 한다.
     """
     wb = Workbook()
     summary = wb.active
@@ -963,9 +963,25 @@ def source_23_unsupported_formula() -> str:
 
     ws = wb.create_sheet("본표")
     ws.append(["일자", "기본", "요약값"])
-    ws.append([_dt.date(2026, 12, 1), 100, "=요약!A1"])  # 시트 간 참조: 계산기 범위 밖
+    ws.append([_dt.date(2026, 12, 1), 100, "=요약!A1"])
     ws.append([_dt.date(2026, 12, 2), 110, "=요약!A1"])
-    return _save_wb(wb, "S23_미지원수식.xlsx", SOURCE_DIR)
+    return _save_wb(wb, "S23_시트간참조.xlsx", SOURCE_DIR)
+
+
+def source_24_truly_unsupported_formula() -> str:
+    """계산기도 계산 못 하는 수식(존재하지 않는 외부 파일 참조)에 캐시도 없음.
+
+    계산기가 아무리 좋아져도 못 푸는 경우는 항상 있다 - 디스크에 없는
+    다른 엑셀 파일을 참조하는 수식이 대표적이다. 이런 경우 여전히
+    FormulaCacheError 로 안전하게 걸러야 한다(틀린 값을 만들어내지 않고).
+    """
+    wb = Workbook()
+    ws = wb.active
+    ws.title = "본표"
+    ws.append(["일자", "기본", "외부참조"])
+    ws.append([_dt.date(2026, 12, 1), 100, "='[없는파일.xlsx]Sheet1'!A1"])
+    ws.append([_dt.date(2026, 12, 2), 110, "='[없는파일.xlsx]Sheet1'!A1"])
+    return _save_wb(wb, "S24_미지원수식.xlsx", SOURCE_DIR)
 
 
 # =========================================================================== #
@@ -1035,7 +1051,8 @@ SOURCE_BUILDERS = [
     source_20_totals_row_mixed,
     source_21_multi_block_sheet,
     source_22_uncalculated_header_formula,
-    source_23_unsupported_formula,
+    source_23_cross_sheet_formula,
+    source_24_truly_unsupported_formula,
 ]
 
 

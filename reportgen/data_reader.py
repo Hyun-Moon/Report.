@@ -30,7 +30,7 @@ from .errors import (
     HeaderError,
     SheetNotFoundError,
 )
-from .formula_engine import FormulaEngine
+from .formula_engine import WorkbookFormulaEngine
 
 __all__ = [
     "Table",
@@ -299,19 +299,24 @@ def read_table(path: str, options: Optional[ReadOptions] = None) -> Table:
         strict = not options.allow_uncalculated_formulas
         unresolved: set[tuple[int, int]] = set()
 
-        # 캐시된 값이 없는 셀이 있으면, 간단한 수식(셀 참조 덧셈, SUM, IF 등)은
-        # 직접 계산해서 채운다. 계산기가 감당 못 하는 수식만 unresolved 로 남는다.
+        # 캐시된 값이 없는 셀이 있으면, 워크북 전체를 계산해서(다른 시트
+        # 참조·VLOOKUP 등 포함, 대부분의 엑셀 수식을 지원) 값을 채운다.
+        # 그래도 못 푸는 수식만 unresolved 로 남는다.
         if any(v is None for row in grid for v in row):
-            formula_workbook = load_workbook(path, data_only=False, read_only=False)
+            engine = WorkbookFormulaEngine(path)
             try:
-                engine = FormulaEngine(sheet, formula_workbook[sheet.title], merged)
                 for r_index, row_values in enumerate(grid):
                     for c_index, value in enumerate(row_values):
                         if value is None:
-                            grid[r_index][c_index] = engine.get(row1 + r_index, col1 + c_index)
-                unresolved = engine.unresolved
+                            abs_row, abs_col = row1 + r_index, col1 + c_index
+                            anchor = merged.get((abs_row, abs_col), (abs_row, abs_col))
+                            number_format = sheet.cell(row=anchor[0], column=anchor[1]).number_format
+                            grid[r_index][c_index] = engine.get(
+                                sheet.title, anchor[0], anchor[1], number_format
+                            )
             finally:
-                formula_workbook.close()
+                engine.close()
+            unresolved = {(r, c) for _sheet, r, c in engine.unresolved}
 
         header_rows = max(1, int(options.header_rows or 1))
         if options.auto_detect and not options.cell_range:

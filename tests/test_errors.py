@@ -111,8 +111,8 @@ def test_input_errors() -> None:
     expect(AggregationError, "제외 조건이 모든 행을 걸러낸 경우",
            lambda: aggregate_monthly(daily, AggregationSpec(only_months=["2099-01"])))
 
-    expect(FormulaCacheError, "계산기가 못 푸는 수식(시트 간 참조)에 캐시도 없는 경우",
-           lambda: read_table(os.path.join(SOURCES, "S23_미지원수식.xlsx"), ReadOptions(sheet_name="본표")))
+    expect(FormulaCacheError, "계산기도 못 푸는 수식(없는 외부 파일 참조)에 캐시도 없는 경우",
+           lambda: read_table(os.path.join(SOURCES, "S24_미지원수식.xlsx"), ReadOptions(sheet_name="본표")))
 
     expect(MappingError, "매핑이 원본에 없는 컬럼을 가리키는 경우",
            lambda: resolve_context(
@@ -173,19 +173,37 @@ def test_header_formula_engine() -> None:
         print(f"  FAIL {label}: warnings={table.warnings}, columns={table.columns}")
 
 
+def test_cross_sheet_formula_computed() -> None:
+    """다른 시트를 참조하는 수식도 오류 없이 정상 계산되는지.
+
+    ``formulas`` 는 워크북 전체를 계산 그래프로 만들기 때문에, 우리 자체
+    계산기와 달리 시트 간 참조도 지원해야 한다.
+    """
+    print("\n[시트 간 참조 수식 - 워크북 전체 계산으로 지원]")
+    path = os.path.join(SOURCES, "S23_시트간참조.xlsx")
+    table = read_table(path, ReadOptions(sheet_name="본표"))
+    ok = not table.warnings and [row[-1] for row in table.rows] == [999, 999]
+    label = "'=요약!A1' 시트 간 참조가 오류 없이 999 로 계산됨"
+    if ok:
+        print(f"  OK   {label}")
+    else:
+        FAILURES.append(label)
+        print(f"  FAIL {label}: warnings={table.warnings}, rows={table.rows}")
+
+
 def test_formula_engine_bypass_for_unsupported() -> None:
-    """계산기가 못 푸는 수식(시트 간 참조 등)은 여전히 안전하게 걸러진다.
+    """계산기도 못 푸는 수식(없는 외부 파일 참조 등)은 여전히 안전하게 걸러진다.
 
     기본은 오류, '빈 값으로 넘어가기' 옵션을 켜면 경고 + 빈 값으로 진행.
     """
     print("\n[계산기가 못 푸는 수식 - 우회 옵션]")
-    path = os.path.join(SOURCES, "S23_미지원수식.xlsx")
+    path = os.path.join(SOURCES, "S24_미지원수식.xlsx")
     options = ReadOptions(sheet_name="본표", allow_uncalculated_formulas=True)
     table = read_table(path, options)
     ok = bool(table.warnings) and table.rows[0][-1] is None and table.rows[0][:2] == [
         _dt.datetime(2026, 12, 1), 100,
     ]
-    label = "우회 옵션: 시트 간 참조는 경고 + 빈 값, 나머지 컬럼은 정상"
+    label = "우회 옵션: 없는 외부 파일 참조는 경고 + 빈 값, 나머지 컬럼은 정상"
     if ok:
         print(f"  OK   {label}")
         print(f"         -> {table.warnings[0]}")
@@ -316,6 +334,7 @@ def main() -> int:
     test_input_errors()
     test_formula_engine_computes_simple_formulas()
     test_header_formula_engine()
+    test_cross_sheet_formula_computed()
     test_formula_engine_bypass_for_unsupported()
     test_table_block_detection()
     test_graceful_paths()
