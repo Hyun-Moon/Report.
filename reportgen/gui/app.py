@@ -369,6 +369,20 @@ class ReportApp(ttk.Frame):
         ttk.Label(buttons, textvariable=self.tpl_info, foreground="#0a6").pack(side="left", padx=(10, 0))
         ttk.Button(buttons, text="다음 단계 ▶", command=lambda: self._goto(2)).pack(side="right")
 
+        auto_row = ttk.Frame(frame)
+        auto_row.pack(fill="x", pady=(4, 0))
+        self.auto_generate = tk.BooleanVar(value=False)
+        ttk.Checkbutton(
+            auto_row,
+            text="이름으로 자동 매칭한 뒤, 매핑 확인 없이 바로 생성",
+            variable=self.auto_generate,
+        ).pack(side="left")
+        ttk.Label(
+            auto_row,
+            text="※ 태그 이름과 엑셀 컬럼 이름이 다르면 빈 값으로 나갈 수 있으니, 처음 쓰는 템플릿이면 한 번은 3단계에서 확인해 보세요.",
+            foreground="#a60",
+        ).pack(side="left", padx=(6, 0))
+
         found = ttk.LabelFrame(frame, text="템플릿에서 찾은 항목", padding=6)
         found.pack(fill="both", expand=True, pady=(8, 0))
         self.slot_view = TableView(found, height=12)
@@ -440,18 +454,33 @@ class ReportApp(ttk.Frame):
         except ReportGenError as exc:
             messagebox.showwarning("매핑 불러오기", str(exc))
 
+        used_saved_profile = False
         if profile and profile.bindings:
             self.bindings = dict(profile.bindings)
             for slot in slots:
                 self.bindings.setdefault(slot.key, Binding())
             self._apply_profile_settings(profile)
-            self._say("저장된 매핑을 불러왔습니다. 3단계에서 확인하세요.")
+            used_saved_profile = True
         else:
             self.bindings = auto_match(slots, columns)
-            self._say("이름이 비슷한 항목을 자동으로 연결했습니다. 3단계에서 확인하세요.")
 
         self._refresh_mapping_view()
         self._set_step_enabled(5 if self.table else 3)
+
+        if self.auto_generate.get() and self.table is not None:
+            self._say(
+                "저장된 매핑을 불러와 바로 생성합니다…"
+                if used_saved_profile
+                else "이름으로 자동 매칭한 뒤 바로 생성합니다…"
+            )
+            self.notebook.select(self.step5)
+            self._generate()
+            return
+
+        if used_saved_profile:
+            self._say("저장된 매핑을 불러왔습니다. 3단계에서 확인하세요.")
+        else:
+            self._say("이름이 비슷한 항목을 자동으로 연결했습니다. 3단계에서 확인하세요.")
         self.notebook.select(self.step3)
 
     def _apply_profile_settings(self, profile: MappingProfile) -> None:
