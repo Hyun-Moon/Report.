@@ -44,6 +44,8 @@ _RE_D = re.compile(r"^\s*(\d{1,2})\s*일\s*$")
 _RE_DATETIME_PREFIX = re.compile(r"^\s*(\d{4}[-./]\d{1,2}[-./]\d{1,2})[ T]\d")
 # '2026-07-01(수)' 처럼 끝에 요일/비고가 괄호로 덧붙은 경우 그 부분을 뗀다.
 _RE_TRAILING_PAREN = re.compile(r"\s*[(（][^()（）]{1,6}[)）]\s*$")
+# '2026년 8월 1일 토요일' 처럼 괄호 없이 요일이 그대로 붙은 경우도 뗀다.
+_RE_TRAILING_WEEKDAY = re.compile(r"\s*[월화수목금토일]요일\s*$")
 
 
 def excel_serial_to_date(serial: float) -> _dt.date:
@@ -95,6 +97,7 @@ def parse_date(
         text = prefix.group(1)
     else:
         text = _RE_TRAILING_PAREN.sub("", text)
+        text = _RE_TRAILING_WEEKDAY.sub("", text)
 
     m = _RE_YMD.match(text)
     if m:

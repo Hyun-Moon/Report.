@@ -37,6 +37,14 @@ from ..data_reader import ReadOptions, Table, list_sheets, list_table_blocks, re
 from ..dateutils import month_label, parse_date
 from ..errors import ReportGenError
 from ..generator import GenerationRequest, Prepared, auto_generate, generate
+from ..multifile import (
+    DailyRowSpec,
+    build_monthly_table,
+    extract_date,
+    list_daily_files,
+    preview_daily_file,
+    save_table_as_excel,
+)
 from ..mapping import (
     BUILTIN_KEYS,
     Binding,
@@ -96,6 +104,7 @@ class ReportApp(ttk.Frame):
         self.notebook.pack(fill="both", expand=True)
 
         self.step0 = ttk.Frame(self.notebook, padding=10)
+        self.step_multi = ttk.Frame(self.notebook, padding=10)
         self.step1 = ttk.Frame(self.notebook, padding=10)
         self.step2 = ttk.Frame(self.notebook, padding=10)
         self.step3 = ttk.Frame(self.notebook, padding=10)
@@ -103,6 +112,7 @@ class ReportApp(ttk.Frame):
         self.step5 = ttk.Frame(self.notebook, padding=10)
         for frame, title in (
             (self.step0, "⚡ 자동 완성"),
+            (self.step_multi, "📁 여러 파일 취합"),
             (self.step1, "1. 원본 엑셀"),
             (self.step2, "2. 템플릿"),
             (self.step3, "3. 매핑"),
@@ -112,6 +122,7 @@ class ReportApp(ttk.Frame):
             self.notebook.add(frame, text=title)
 
         self._build_step0()
+        self._build_step_multi()
         self._build_step1()
         self._build_step2()
         self._build_step3()
@@ -129,9 +140,10 @@ class ReportApp(ttk.Frame):
 
     def _set_step_enabled(self, up_to: int) -> None:
         self.notebook.tab(0, state="normal")  # 0단계(자동 완성)는 항상 켜 둔다
+        self.notebook.tab(1, state="normal")  # 여러 파일 취합도 항상 켜 둔다
         for offset in range(5):
             state = "normal" if offset < up_to else "disabled"
-            self.notebook.tab(offset + 1, state=state)
+            self.notebook.tab(offset + 2, state=state)
 
     def _say(self, message: str) -> None:
         self.status.set(message)
@@ -288,6 +300,249 @@ class ReportApp(ttk.Frame):
         stamp = _dt.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
         self.auto_result_text.insert("1.0", f"[{stamp}]\n{text}\n")
         self.auto_result_text.configure(state="disabled")
+
+    # ------------------------------------------------------------------ #
+    # 📁 여러 파일 취합 (하루 1파일 로그를 모아 월간표로)
+    # ------------------------------------------------------------------ #
+    def _build_step_multi(self) -> None:
+        frame = self.step_multi
+        ttk.Label(
+            frame,
+            text="파일 하나 = 하루치인 로그 파일을 모아 월간표(하루 1행)로 만듭니다.",
+            font=("", 10, "bold"),
+        ).pack(anchor="w")
+        ttk.Label(
+            frame,
+            text=(
+                "예: 공조기/냉동기 운전일지처럼 매일 새 파일이 생기고, 그 안에 그날 "
+                "시간별 데이터와 맨 아래 그날 요약값(일사용량 등)이 있는 경우. 만든 "
+                "월간표는 파일로 저장되어, 그대로 '1단계 원본 엑셀'에 넣어 이어서 "
+                "쓸 수 있습니다."
+            ),
+            foreground="#666",
+            wraplength=560,
+            justify="left",
+        ).pack(anchor="w", pady=(2, 10))
+
+        folder_box = ttk.LabelFrame(frame, text="① 그 달의 파일이 모여 있는 폴더", padding=8)
+        folder_box.pack(fill="x")
+        row = ttk.Frame(folder_box)
+        row.pack(fill="x")
+        self.multi_folder = tk.StringVar()
+        ttk.Entry(row, textvariable=self.multi_folder).pack(side="left", fill="x", expand=True)
+        ttk.Button(row, text="폴더 선택…", command=self._multi_pick_folder).pack(side="left", padx=(6, 0))
+
+        range_box = ttk.LabelFrame(frame, text="② 파일 하나 안에서 읽을 범위 (전부 같은 양식이라고 가정)", padding=8)
+        range_box.pack(fill="x", pady=(8, 0))
+        r1 = ttk.Frame(range_box)
+        r1.pack(fill="x", pady=2)
+        ttk.Label(r1, text="시트", width=10).pack(side="left")
+        self.multi_sheet = tk.StringVar()
+        ttk.Entry(r1, textvariable=self.multi_sheet, width=20).pack(side="left")
+        ttk.Label(r1, text="셀 범위", width=10).pack(side="left", padx=(16, 0))
+        self.multi_range = tk.StringVar()
+        ttk.Entry(r1, textvariable=self.multi_range, width=16).pack(side="left")
+        ttk.Label(r1, text="예: A3:C11 (헤더 포함)", foreground="#666").pack(side="left", padx=(6, 0))
+        ttk.Label(r1, text="헤더 행 수", width=10).pack(side="left", padx=(16, 0))
+        self.multi_header_rows = tk.IntVar(value=1)
+        ttk.Spinbox(r1, from_=1, to=5, width=4, textvariable=self.multi_header_rows).pack(side="left")
+        ttk.Button(r1, text="샘플 미리보기", command=self._multi_preview).pack(side="left", padx=(16, 0))
+
+        self.multi_preview_status = tk.StringVar(value="")
+        ttk.Label(range_box, textvariable=self.multi_preview_status, foreground="#666").pack(
+            anchor="w", pady=(4, 0)
+        )
+        self.multi_preview_view = TableView(range_box, height=8)
+        self.multi_preview_view.pack(fill="both", expand=True, pady=(4, 0))
+        ttk.Label(
+            range_box,
+            text="맨 왼쪽 '#' 열이 행 번호입니다(0부터). 그날 요약값이 있는 행 번호를 아래에 적어 주세요.",
+            foreground="#666",
+        ).pack(anchor="w", pady=(2, 0))
+
+        pick_box = ttk.LabelFrame(frame, text="③ 그날 요약으로 가져올 행", padding=8)
+        pick_box.pack(fill="x", pady=(8, 0))
+        r2 = ttk.Frame(pick_box)
+        r2.pack(fill="x", pady=2)
+        ttk.Label(r2, text="행 번호", width=10).pack(side="left")
+        self.multi_rows_entry = tk.StringVar()
+        ttk.Entry(r2, textvariable=self.multi_rows_entry, width=16).pack(side="left")
+        ttk.Label(r2, text="쉼표로 구분, 예: 6,7", foreground="#666").pack(side="left", padx=(6, 0))
+        r3 = ttk.Frame(pick_box)
+        r3.pack(fill="x", pady=2)
+        ttk.Label(r3, text="행 이름표", width=10).pack(side="left")
+        self.multi_labels_entry = tk.StringVar()
+        ttk.Entry(r3, textvariable=self.multi_labels_entry, width=16).pack(side="left")
+        ttk.Label(
+            r3, text="행을 2개 이상 고를 때만. 예: TON,N/M3 (컬럼 이름 뒤에 붙어 구분됨)", foreground="#666"
+        ).pack(side="left", padx=(6, 0))
+        r4 = ttk.Frame(pick_box)
+        r4.pack(fill="x", pady=2)
+        ttk.Label(r4, text="가져올 컬럼", width=10).pack(side="left")
+        self.multi_columns_entry = tk.StringVar()
+        ttk.Entry(r4, textvariable=self.multi_columns_entry, width=30).pack(side="left")
+        ttk.Label(r4, text="쉼표로 구분, 비우면 전체 컬럼", foreground="#666").pack(side="left", padx=(6, 0))
+
+        actions = ttk.Frame(frame)
+        actions.pack(fill="x", pady=(10, 0))
+        self.multi_build_button = ttk.Button(actions, text="월간표 만들기", command=self._multi_build)
+        self.multi_build_button.pack(side="left")
+        self.multi_progress = ttk.Progressbar(actions, mode="indeterminate", length=180)
+        self.multi_progress.pack(side="left", padx=(10, 0))
+        self.multi_use_button = ttk.Button(
+            actions, text="이 결과를 1단계 원본으로 사용", command=self._multi_use_output, state="disabled"
+        )
+        self.multi_use_button.pack(side="left", padx=(10, 0))
+
+        result = ttk.LabelFrame(frame, text="결과", padding=6)
+        result.pack(fill="both", expand=True, pady=(8, 0))
+        self.multi_result_text = tk.Text(result, height=8, wrap="word")
+        scroll = ttk.Scrollbar(result, orient="vertical", command=self.multi_result_text.yview)
+        self.multi_result_text.configure(yscrollcommand=scroll.set, state="disabled")
+        self.multi_result_text.pack(side="left", fill="both", expand=True)
+        scroll.pack(side="right", fill="y")
+
+        self.multi_output_path: str = ""
+
+    def _multi_pick_folder(self) -> None:
+        path = filedialog.askdirectory(title="그 달의 파일이 모여 있는 폴더 선택")
+        if path:
+            self.multi_folder.set(path)
+
+    def _multi_read_options(self) -> ReadOptions:
+        return ReadOptions(
+            sheet_name=self.multi_sheet.get().strip() or None,
+            cell_range=self.multi_range.get().strip() or None,
+            header_rows=int(self.multi_header_rows.get() or 1),
+            auto_detect=not self.multi_range.get().strip(),
+            allow_uncalculated_formulas=True,
+        )
+
+    def _multi_sample_file(self) -> Optional[str]:
+        folder = self.multi_folder.get().strip()
+        if not folder:
+            messagebox.showinfo("안내", "먼저 폴더를 선택해 주세요.")
+            return None
+        try:
+            files = list_daily_files(folder)
+        except ReportGenError as exc:
+            show_error("폴더 읽기 실패", exc)
+            return None
+        if not files:
+            messagebox.showinfo("안내", "이 폴더에서 엑셀 파일을 찾지 못했습니다.")
+            return None
+        return files[0]
+
+    def _multi_preview(self) -> None:
+        sample = self._multi_sample_file()
+        if sample is None:
+            return
+        try:
+            table = preview_daily_file(sample, self._multi_read_options())
+        except ReportGenError as exc:
+            show_error("미리보기 실패", exc)
+            return
+        matrix = [["#"] + list(table.columns)] + [[i] + list(row) for i, row in enumerate(table.rows)]
+        self.multi_preview_view.load_matrix(matrix)
+        day = extract_date(sample)
+        day_text = day.isoformat() if day else "(못 찾음 — 파일명이나 셀 내용을 확인해 주세요)"
+        self.multi_preview_status.set(
+            f"샘플: {os.path.basename(sample)}  ·  인식된 날짜: {day_text}  ·  데이터 행 {table.n_rows}개"
+        )
+
+    def _multi_spec(self) -> Optional[DailyRowSpec]:
+        raw_rows = [p.strip() for p in self.multi_rows_entry.get().split(",") if p.strip()]
+        if not raw_rows:
+            messagebox.showinfo("안내", "가져올 행 번호를 입력해 주세요 (예: 6,7). 위 미리보기의 '#' 열을 참고하세요.")
+            return None
+        try:
+            row_indexes = [int(p) for p in raw_rows]
+        except ValueError:
+            messagebox.showinfo("안내", "행 번호는 숫자만 쉼표로 구분해서 입력해 주세요 (예: 6,7).")
+            return None
+        row_labels = [p.strip() for p in self.multi_labels_entry.get().split(",") if p.strip()]
+        columns = [p.strip() for p in self.multi_columns_entry.get().split(",") if p.strip()]
+        return DailyRowSpec(row_indexes=row_indexes, row_labels=row_labels, columns=columns)
+
+    def _multi_build(self) -> None:
+        folder = self.multi_folder.get().strip()
+        if not folder:
+            messagebox.showinfo("안내", "먼저 폴더를 선택해 주세요.")
+            return
+        spec = self._multi_spec()
+        if spec is None:
+            return
+
+        self.multi_build_button.configure(state="disabled")
+        self.multi_use_button.configure(state="disabled")
+        self.multi_progress.start(12)
+        self._say("여러 파일을 모아 월간표를 만드는 중입니다…")
+
+        options = self._multi_read_options()
+        holder: dict[str, Any] = {}
+
+        def work() -> None:
+            try:
+                table, warnings = build_monthly_table(folder, spec, options)
+                folder_name = os.path.basename(os.path.normpath(folder)) or "월간취합"
+                out_path = os.path.join(self.output_dir, f"월간취합_{folder_name}.xlsx")
+                saved = save_table_as_excel(table, out_path)
+                holder["table"] = table
+                holder["warnings"] = warnings
+                holder["path"] = saved
+            except BaseException as exc:  # noqa: BLE001 - 스레드 밖으로 넘긴다
+                holder["error"] = exc
+                holder["trace"] = traceback.format_exc()
+
+        thread = threading.Thread(target=work, daemon=True)
+        thread.start()
+        self._poll_multi_build(thread, holder)
+
+    def _poll_multi_build(self, thread: threading.Thread, holder: dict[str, Any]) -> None:
+        if thread.is_alive():
+            self.after(150, lambda: self._poll_multi_build(thread, holder))
+            return
+
+        self.multi_progress.stop()
+        self.multi_build_button.configure(state="normal")
+
+        if "error" in holder:
+            self._write_multi_result(holder.get("trace", ""))
+            show_error("월간표 만들기 실패", holder["error"])
+            self._say("월간표 만들기에 실패했습니다.")
+            return
+
+        table = holder["table"]
+        warnings = holder["warnings"]
+        path = holder["path"]
+        self.multi_output_path = path
+
+        matrix = table.preview(limit=200)
+        self.multi_preview_view.load_matrix(matrix)
+
+        lines = [f"{table.n_rows}일치를 모아 저장했습니다: {path}"]
+        if warnings:
+            lines.append("")
+            lines.append("[건너뛴 파일 / 참고]")
+            lines.extend(f"  - {w}" for w in warnings)
+        self._write_multi_result("\n".join(lines))
+        self._say(f"월간표 완료: {table.n_rows}일치")
+        self.multi_use_button.configure(state="normal")
+        messagebox.showinfo("완료", f"{table.n_rows}일치를 모아 저장했습니다.\n\n{path}")
+
+    def _multi_use_output(self) -> None:
+        if not self.multi_output_path:
+            return
+        self.src_path.set(self.multi_output_path)
+        self.notebook.select(self.step1)
+        self._say("1단계에 월간표 파일을 넣었습니다. [데이터 읽기]를 눌러 이어서 진행하세요.")
+
+    def _write_multi_result(self, text: str) -> None:
+        self.multi_result_text.configure(state="normal")
+        self.multi_result_text.delete("1.0", "end")
+        stamp = _dt.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        self.multi_result_text.insert("1.0", f"[{stamp}]\n{text}\n")
+        self.multi_result_text.configure(state="disabled")
 
     # ------------------------------------------------------------------ #
     # 1단계 - 원본 엑셀

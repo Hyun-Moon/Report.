@@ -372,6 +372,136 @@ def test_auto_generate() -> None:
             print(f"  FAIL {label4}: 오류가 나지 않음")
 
 
+def test_multifile_consolidation() -> None:
+    """'📁 여러 파일 취합'(하루 1파일 로그 -> 월간표) 이 실제로 동작하는지 확인.
+
+    공조기/냉동기/유량계 운전일지처럼 하루마다 새 파일이 생기고, 그 안에
+    시간별 데이터 + 맨 아래 그날 요약 행(예: '일사용량 (TON)', '일사용량
+    (N/M3)')이 있는 실제 상황을 재현한다. 날짜를 잘못 찾는 것(특히 작은
+    숫자를 엑셀 일련번호로 오인하는 회귀)이 가장 위험하므로 그 부분을
+    중점적으로 확인한다.
+    """
+    import datetime as dt
+
+    from openpyxl import Workbook
+
+    from reportgen.data_reader import ReadOptions
+    from reportgen.errors import ReportGenError
+    from reportgen.multifile import (
+        DailyRowSpec,
+        build_monthly_table,
+        extract_date,
+    )
+
+    print("\n[📁 여러 파일 취합: 하루 1파일 로그를 모아 월간표로]")
+
+    def make_daily_file(path: str, day: int, ton: int, nm3: int) -> None:
+        wb = Workbook()
+        sheet = wb.active
+        sheet.title = "DailyReport"
+        sheet["A1"] = f"2026년 8월 {day}일 토요일"
+        sheet["A3"] = "구분"
+        sheet["B3"] = "가스유량"
+        sheet["C3"] = "전력"
+        row = 4
+        for hour in range(1, 6):
+            sheet.cell(row=row, column=1, value=f"{hour}시")
+            sheet.cell(row=row, column=2, value=hour)
+            sheet.cell(row=row, column=3, value=hour * 10)
+            row += 1
+        sheet.cell(row=row, column=1, value="*안내: 참고용 각주")
+        row += 1
+        sheet.cell(row=row, column=1, value="일사용량 (TON)")
+        sheet.cell(row=row, column=3, value=ton)
+        row += 1
+        sheet.cell(row=row, column=1, value="일사용량 (N/M3)")
+        sheet.cell(row=row, column=3, value=nm3)
+        wb.save(path)
+
+    with tempfile.TemporaryDirectory() as tmp:
+        daily_dir = os.path.join(tmp, "daily")
+        os.makedirs(daily_dir)
+        make_daily_file(os.path.join(daily_dir, "유량계 관련_20260801.xlsx"), 1, 137394, 8931)
+        make_daily_file(os.path.join(daily_dir, "유량계 관련_20260802.xlsx"), 2, 140000, 9000)
+        make_daily_file(os.path.join(daily_dir, "유량계 관련_20260803.xlsx"), 3, 135500, 8800)
+
+        # 날짜를 못 찾아야 하는 파일(파일명에 날짜 없음, 안의 값도 작은 숫자뿐)
+        decoy = Workbook()
+        decoy_sheet = decoy.active
+        decoy_sheet.title = "DailyReport"
+        decoy_sheet["A3"] = "구분"
+        decoy_sheet["B3"] = "가스유량"
+        decoy_sheet["C3"] = "전력"
+        decoy_sheet["A4"] = "1시"
+        decoy_sheet["B4"] = 1
+        decoy_sheet["C4"] = 10
+        decoy.save(os.path.join(daily_dir, "메모.xlsx"))
+
+        # 회귀 확인: 작은 숫자(1)를 엑셀 일련번호로 오인해 날짜를 '찾아버리면'
+        # 안 된다 (예전엔 1899-12-31 로 잘못 인식되는 문제가 있었다).
+        found = extract_date(os.path.join(daily_dir, "메모.xlsx"))
+        label0 = "작은 숫자만 있는 파일에서 날짜를 잘못 '찾아내지' 않음"
+        if found is None:
+            print(f"  OK   {label0}")
+        else:
+            FAILURES.append(label0)
+            print(f"  FAIL {label0}: {found} 로 잘못 인식함")
+
+        options = ReadOptions(sheet_name="DailyReport", cell_range="A3:C11", auto_detect=False)
+        spec = DailyRowSpec(row_indexes=[6, 7], row_labels=["TON", "N/M3"], columns=["전력"])
+        table, warnings = build_monthly_table(daily_dir, spec, options)
+
+        ok = (
+            table.columns == ["날짜", "전력 (TON)", "전력 (N/M3)"]
+            and [tuple(r) for r in table.rows]
+            == [
+                (dt.date(2026, 8, 1), 137394, 8931),
+                (dt.date(2026, 8, 2), 140000, 9000),
+                (dt.date(2026, 8, 3), 135500, 8800),
+            ]
+        )
+        label1 = "하루 1파일 3일치를 날짜순으로 정확히 취합 (컬럼 이름표 포함)"
+        print(f"  {'OK  ' if ok else 'FAIL'} {label1}")
+        if not ok:
+            FAILURES.append(label1)
+            print(f"         -> columns={table.columns}, rows={table.rows}")
+
+        ok2 = any("메모.xlsx" in w and "날짜를 찾지 못해" in w for w in warnings)
+        label2 = "날짜 없는 파일은 조용히 무시하지 않고 경고로 남김"
+        print(f"  {'OK  ' if ok2 else 'FAIL'} {label2}")
+        if not ok2:
+            FAILURES.append(label2)
+            print(f"         -> warnings={warnings}")
+
+        # 취합 결과를 실제 .xlsx 로 저장해서, 그대로 1단계 원본으로 다시
+        # 읽어도 값이 그대로인지(왕복) 확인한다.
+        from reportgen.data_reader import read_table
+        from reportgen.multifile import save_table_as_excel
+
+        saved_path = os.path.join(tmp, "월간취합.xlsx")
+        save_table_as_excel(table, saved_path)
+        reloaded = read_table(saved_path)
+        ok3 = reloaded.columns == table.columns and reloaded.n_rows == table.n_rows
+        label3 = "취합 결과를 저장한 파일이 '1단계 원본 엑셀'로 그대로 다시 읽힘"
+        print(f"  {'OK  ' if ok3 else 'FAIL'} {label3}")
+        if not ok3:
+            FAILURES.append(label3)
+            print(f"         -> columns={reloaded.columns}, rows={reloaded.n_rows}")
+
+        # 행 번호를 지정하지 않으면(실수) 오류로 바로 알려줘야 한다.
+        label4 = "행 번호를 안 정하면 오류로 바로 알려줌"
+        try:
+            build_monthly_table(daily_dir, DailyRowSpec(row_indexes=[]), options)
+        except ReportGenError as exc:
+            print(f"  OK   {label4}\n         -> {str(exc).splitlines()[0]}")
+        except BaseException as exc:  # noqa: BLE001
+            FAILURES.append(label4)
+            print(f"  FAIL {label4}: {type(exc).__name__} 이(가) 나옴 ({exc})")
+        else:
+            FAILURES.append(label4)
+            print(f"  FAIL {label4}: 오류가 나지 않음")
+
+
 def test_graceful_paths() -> None:
     """오류가 '나면 안 되는' 경우들."""
     print("\n[예외 없이 넘어가야 하는 경우]")
@@ -458,6 +588,7 @@ def main() -> int:
     test_formula_engine_bypass_for_unsupported()
     test_table_block_detection()
     test_auto_generate()
+    test_multifile_consolidation()
     test_graceful_paths()
     test_no_network()
     print()

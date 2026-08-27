@@ -56,3 +56,7 @@ class TemplateError(ReportGenError):
 
 class AggregationError(ReportGenError):
     """집계 설정이 잘못되었거나 날짜를 인식하지 못한 경우."""
+
+
+class MultiFileError(ReportGenError):
+    """'여러 파일 모아 월간표 만들기'(하루 1파일 취합) 관련 오류."""
