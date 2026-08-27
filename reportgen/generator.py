@@ -22,8 +22,18 @@ from .aggregator import (
 from .data_reader import ReadOptions, Table, list_sheets, list_table_blocks, quick_header_preview, read_table
 from .dateutils import month_label, parse_date
 from .errors import ReportGenError
-from .mapping import Binding, MappingProfile, TemplateSlot, auto_match, load_mapping, mapping_path_for, resolve_context, save_mapping
-from .templating import TemplateHandler, open_template
+from .mapping import (
+    Binding,
+    MappingProfile,
+    TemplateSlot,
+    auto_match,
+    load_mapping,
+    mapping_path_for,
+    normalize_text,
+    resolve_context,
+    save_mapping,
+)
+from .templating import TemplateHandler, infer_label_slots, open_template
 
 __all__ = [
     "GenerationRequest",
@@ -306,13 +316,26 @@ def auto_generate(
     """
     handler = open_template(template_path)
     slots = handler.scan()
+    used_label_inference = False
     if not slots:
-        raise ReportGenError(
-            f"템플릿 '{handler.name}' 에서 {{{{태그}}}} 를 찾지 못했습니다.",
-            "기존에 쓰던 서식처럼 {{태그}} 가 없는 파일은 자동 완성 대상을 정할 수 "
-            "없습니다. GUI 3단계의 [엑셀 셀 좌표 추가…] 로 한 번만 직접 연결해 "
-            "매핑을 저장해 두면, 그다음부터는 이 파일들만 지정해도 자동으로 완성됩니다.",
-        )
+        if handler.kind == "excel":
+            slots = infer_label_slots(template_path)
+            used_label_inference = True
+        if not slots:
+            hint = (
+                "GUI 3단계의 [엑셀 셀 좌표 추가…] 로 한 번만 직접 연결해 매핑을 저장해 "
+                "두면, 그다음부터는 이 파일들만 지정해도 자동으로 완성됩니다."
+                if handler.kind == "excel"
+                else "워드 템플릿은 {{태그}} 가 있어야만 자동으로 완성할 수 있습니다. "
+                "템플릿에 {{태그}} 를 적어 넣은 뒤 다시 시도해 주세요."
+            )
+            message = (
+                f"템플릿 '{handler.name}' 에서 {{{{태그}}}} 를 찾지 못했고, "
+                "라벨 옆 빈 칸도 찾지 못했습니다."
+                if handler.kind == "excel"
+                else f"템플릿 '{handler.name}' 에서 {{{{태그}}}} 를 찾지 못했습니다."
+            )
+            raise ReportGenError(message, hint)
 
     mapping_path = mapping_path_for(template_path, mapping_dir)
     profile = load_mapping(mapping_path)
@@ -325,19 +348,37 @@ def auto_generate(
     else:
         sheet_name, cell_range, table, bindings, score = _auto_pick_table(source_path, slots)
         if table is None:
+            unit = "라벨" if used_label_inference else "태그"
             raise ReportGenError(
-                "원본 엑셀의 어느 시트에서도 템플릿 태그와 이름이 맞는 표를 찾지 못했습니다.",
+                f"원본 엑셀의 어느 시트에서도 템플릿 {unit}과 이름이 맞는 표를 찾지 못했습니다.",
                 "GUI 를 한 번 열어 1~3단계를 직접 확인하면서 매핑을 만들어 저장해 "
-                "주세요. 태그 이름과 엑셀 컬럼 이름이 비슷해야 자동으로 연결됩니다. "
+                f"주세요. {unit} 이름과 엑셀 컬럼 이름이 비슷해야 자동으로 연결됩니다. "
                 "그 뒤에는 원본/템플릿/저장 폴더만 지정해도 자동으로 완성됩니다.",
             )
         read_options = ReadOptions(sheet_name=sheet_name, cell_range=cell_range, auto_detect=False)
         agg = _auto_pick_aggregation(table)
-        note = (
-            f"'{sheet_name}' 시트의 '{cell_range}' 표를 템플릿과 자동으로 연결했습니다 "
-            f"(태그 {len(slots)}개 중 {score}개를 컬럼과 연결). 3단계에서 한 번 확인해 보는 "
-            "것을 권합니다."
-        )
+        unit = "라벨" if used_label_inference else "태그"
+        if used_label_inference:
+            note = (
+                f"템플릿에 {{{{태그}}}} 가 없어 셀 옆 라벨 텍스트로 값 자리를 추론한 뒤, "
+                f"'{sheet_name}' 시트의 '{cell_range}' 표와 자동으로 연결했습니다 "
+                f"({unit} {len(slots)}개 중 {score}개를 컬럼과 연결)."
+            )
+        else:
+            note = (
+                f"'{sheet_name}' 시트의 '{cell_range}' 표를 템플릿과 자동으로 연결했습니다 "
+                f"({unit} {len(slots)}개 중 {score}개를 컬럼과 연결)."
+            )
+        matched_pairs = [
+            f"{slot.match_text or slot.key} → {bindings[slot.key].column}"
+            for slot in slots
+            if bindings.get(slot.key) is not None and bindings[slot.key].source == "column"
+        ]
+        if matched_pairs:
+            note += " 연결 내역: " + ", ".join(matched_pairs[:10])
+            if len(matched_pairs) > 10:
+                note += f" 외 {len(matched_pairs) - 10}건"
+        note += " 3단계에서 한 번 확인해 보는 것을 권합니다."
         if agg.get("enabled"):
             note += " 일 단위 데이터로 보여 월 단위로 자동 집계했습니다."
         if save_profile:
@@ -400,10 +441,9 @@ def _auto_pick_table(
                 continue
             if not columns:
                 continue
-            bindings = auto_match(list(slots), columns)
-            score = sum(1 for b in bindings.values() if b.source == "column")
-            if score > best_score:
-                best_score = score
+            _bindings, rank_score = _match_quality(slots, columns)
+            if rank_score > best_score:
+                best_score = rank_score
                 best_sheet = sheet_name
                 best_range = block.range
 
@@ -419,9 +459,36 @@ def _auto_pick_table(
             allow_uncalculated_formulas=True,
         ),
     )
-    bindings = auto_match(list(slots), table.columns)
+    bindings, _rank_score = _match_quality(slots, table.columns)
     final_score = sum(1 for b in bindings.values() if b.source == "column")
     return best_sheet, best_range, table, bindings, final_score
+
+
+def _match_quality(slots: list[TemplateSlot], columns: list[str]) -> tuple[dict[str, Binding], int]:
+    """표 후보 하나가 템플릿과 얼마나 '믿을 만하게' 맞는지 점수를 매긴다.
+
+    단순히 '컬럼으로 연결된 슬롯 수'만 세면, "용량" 처럼 짧고 흔한 컬럼
+    이름이 "전력사용량", "저장용량" 처럼 뜻이 다른 라벨 여러 개에 부분
+    일치로 겹쳐 걸리면서 엉뚱한 표가 높은 점수를 받는 문제가 있었다
+    (예: 설비 목록 표의 "용량" 컬럼이 "전력사용량(kWh)", "사용량" 라벨
+    둘 다에 부분 일치해 버림). 그래서 여기서는:
+
+    * 서로 다른 슬롯이 **같은 컬럼**을 가리키면 한 번만 센다 (겹쳐 걸린
+      부분 일치는 표의 실제 다양성을 부풀리지 못한다).
+    * 이름이 **완전히 같은** 연결에는 가산점을 준다 (부분 일치보다 훨씬
+      믿을 만하다).
+    """
+    bindings = auto_match(list(slots), columns)
+    used_columns: list[str] = []
+    exact_bonus = 0
+    for slot in slots:
+        binding = bindings.get(slot.key)
+        if binding is None or binding.source != "column":
+            continue
+        used_columns.append(binding.column)
+        if normalize_text(binding.column) == normalize_text(slot.match_text or slot.key):
+            exact_bonus += 1
+    return bindings, len(set(used_columns)) + exact_bonus
 
 
 def _auto_pick_aggregation(table: Table) -> dict[str, Any]:

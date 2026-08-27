@@ -24,6 +24,7 @@ __all__ = [
     "TemplateSlot",
     "BUILTIN_KEYS",
     "auto_match",
+    "normalize_text",
     "mapping_path_for",
     "load_mapping",
     "save_mapping",
@@ -99,6 +100,11 @@ class TemplateSlot:
     where: str = ""
     sample: str = ""
     occurrences: int = 1
+    #: 자동 매칭에 쓸 텍스트가 key 와 다를 때만 채운다. ``{{태그}}`` 는 태그
+    #: 이름이 곧 key 라서 비워 두지만, 태그가 없는 엑셀 서식에서 라벨 옆 빈
+    #: 칸을 추론한 경우는 key 가 셀 좌표(``'Sheet1'!B3``)이므로 매칭에는
+    #: 이 필드(라벨 텍스트)를 대신 쓴다.
+    match_text: str = ""
 
     def to_json(self) -> dict[str, Any]:
         return dict(self.__dict__)
@@ -159,6 +165,11 @@ def _norm(text: str) -> str:
     return _NORMALIZE.sub("", str(text)).lower()
 
 
+def normalize_text(text: str) -> str:
+    """``_norm`` 의 공개 버전. 다른 모듈이 '완전 일치인지'를 직접 비교할 때 쓴다."""
+    return _norm(text)
+
+
 def auto_match(slots: list[TemplateSlot], columns: list[str]) -> dict[str, Binding]:
     """태그 이름과 컬럼 이름이 비슷하면 자동으로 연결한다."""
     by_norm = {_norm(c): c for c in columns}
@@ -166,13 +177,18 @@ def auto_match(slots: list[TemplateSlot], columns: list[str]) -> dict[str, Bindi
 
     for slot in slots:
         key = slot.key
+        #: 실제로 이름을 비교할 텍스트. 보통은 key 와 같지만(=태그 이름),
+        #: 라벨 추론으로 만들어진 슬롯은 key 가 셀 좌표라서 따로 둔 라벨
+        #: 텍스트(match_text)를 대신 비교해야 한다.
+        match_key = slot.match_text or key
+
         # 1) 내장 키 먼저
-        if key in BUILTIN_KEYS:
-            result[key] = Binding(source="builtin", builtin=key)
+        if match_key in BUILTIN_KEYS:
+            result[key] = Binding(source="builtin", builtin=match_key)
             continue
 
         # 2) '사용량 (2026-01)' 처럼 달이 못박힌 태그는 그 달의 집계값으로 연결
-        suffix = _PERIOD_SUFFIX.match(key)
+        suffix = _PERIOD_SUFFIX.match(match_key)
         if suffix:
             base = by_norm.get(_norm(suffix.group("base")))
             if base:
@@ -181,7 +197,7 @@ def auto_match(slots: list[TemplateSlot], columns: list[str]) -> dict[str, Bindi
                 )
                 continue
 
-        normalized = _norm(key)
+        normalized = _norm(match_key)
         # 2) 완전 일치
         if normalized in by_norm:
             result[key] = Binding(source="column", column=by_norm[normalized])

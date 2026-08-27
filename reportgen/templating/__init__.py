@@ -7,7 +7,7 @@
 from __future__ import annotations
 
 from .base import TemplateHandler, open_template, template_kind
-from .excel import ExcelTemplate
+from .excel import ExcelTemplate, infer_label_slots
 from .registry import TemplateRegistry
 from .word import WordTemplate
 
@@ -18,4 +18,5 @@ __all__ = [
     "TemplateRegistry",
     "open_template",
     "template_kind",
+    "infer_label_slots",
 ]

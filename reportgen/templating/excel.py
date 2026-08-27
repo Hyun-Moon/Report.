@@ -27,7 +27,7 @@ from ..errors import TemplateError
 from ..mapping import TemplateSlot
 from .base import TABLE_ANCHOR_RE, TAG_RE, TemplateHandler, is_simple_tag
 
-__all__ = ["ExcelTemplate", "CELL_KEY_RE"]
+__all__ = ["ExcelTemplate", "CELL_KEY_RE", "infer_label_slots"]
 
 #: ``Sheet1!B3`` 형태의 직접 좌표 매핑 키
 CELL_KEY_RE = re.compile(r"^\s*(?:'([^']+)'|([^!]+))!\s*([A-Za-z]{1,3}\d+)\s*$")
@@ -35,6 +35,9 @@ CELL_KEY_RE = re.compile(r"^\s*(?:'([^']+)'|([^!]+))!\s*([A-Za-z]{1,3}\d+)\s*$")
 # 스캔 상한 (깨진 파일에서 무한정 도는 것을 막는다)
 _MAX_ROW = 2000
 _MAX_COL = 200
+
+#: 라벨 추론에서 후보로 볼 최대 글자 수 (길면 안내문/문장이지 값 라벨이 아니다)
+_MAX_LABEL_LEN = 30
 
 
 class ExcelTemplate(TemplateHandler):
@@ -174,6 +177,90 @@ class ExcelTemplate(TemplateHandler):
         if isinstance(target, MergedCell):
             target = _merged_anchor(sheet, row, col)
         target.value = _coerce(value)
+
+
+def infer_label_slots(path: str) -> list[TemplateSlot]:
+    """``{{태그}}`` 가 하나도 없는 기존 엑셀 서식에서 '라벨 옆 빈 칸'을 값 자리로
+    추론한다.
+
+    예: A3 칸에 "전력사용량(kWh)" 라고 적혀 있고 바로 오른쪽 B3 칸이 비어
+    있으면 B3 를 그 라벨의 값 자리로 본다(오른쪽이 막혀 있으면 바로 아래
+    칸을 본다). 회사에서 이미 쓰던 서식처럼 태그를 넣을 수 없는 파일을 위한
+    마지막 수단이다.
+
+    여기서는 후보만 만들 뿐, 실제로 값이 연결되는지는 라벨 텍스트가 원본
+    컬럼 이름과 이름이 비슷한 경우로 한정된다(:func:`~reportgen.mapping.auto_match`
+    가 그 판단을 한다) — 이름이 안 맞는 라벨은 빈 채로 남아 아무것도 안 써진다.
+    """
+    try:
+        workbook = load_workbook(
+            path, data_only=False, keep_vba=path.lower().endswith(".xlsm")
+        )
+    except Exception as exc:  # noqa: BLE001
+        raise TemplateError(
+            f"엑셀 템플릿을 열지 못했습니다: {os.path.basename(path)}",
+            f"파일이 손상되었거나 암호가 걸려 있을 수 있습니다. ({exc})",
+        ) from exc
+    try:
+        found: dict[str, TemplateSlot] = {}
+        for sheet in workbook.worksheets:
+            max_row = min(sheet.max_row or 0, _MAX_ROW)
+            max_col = min(sheet.max_column or 0, _MAX_COL)
+            if max_row < 1 or max_col < 1:
+                continue
+            # 이웃 칸은 시트의 '실제 사용 범위'보다 한두 칸 정도는 벗어나도
+            # 허용한다 — 값 칸에 서식(테두리 등)이 전혀 없으면 openpyxl 이 그
+            # 칸을 아예 '사용된 적 없음'으로 보고 max_row/max_col 에서 빼
+            # 버리는 경우가 있다. 라벨 바로 옆 칸만 보므로 위험은 적다.
+            neighbor_row_limit = min(max_row + 2, _MAX_ROW)
+            neighbor_col_limit = min(max_col + 2, _MAX_COL)
+            for row in sheet.iter_rows(min_row=1, max_row=max_row, min_col=1, max_col=max_col):
+                for cell in row:
+                    if isinstance(cell, MergedCell):
+                        continue
+                    label = _label_text(cell.value)
+                    if not label:
+                        continue
+                    target = _blank_neighbor(
+                        sheet, cell.row, cell.column, neighbor_row_limit, neighbor_col_limit
+                    )
+                    if target is None:
+                        continue
+                    where = format_cell_key(sheet.title, f"{get_column_letter(target[1])}{target[0]}")
+                    if label not in found:
+                        found[label] = TemplateSlot(
+                            key=where,
+                            kind="cell",
+                            where=where,
+                            sample=label,
+                            match_text=label,
+                        )
+        return list(found.values())
+    finally:
+        workbook.close()
+
+
+def _label_text(value: Any) -> str:
+    if not isinstance(value, str):
+        return ""
+    text = value.strip()
+    if not text or len(text) > _MAX_LABEL_LEN or "{{" in text:
+        return ""
+    return re.sub(r"[:：]\s*$", "", text).strip()
+
+
+def _blank_neighbor(
+    sheet: Worksheet, row: int, col: int, max_row: int, max_col: int
+) -> Optional[tuple[int, int]]:
+    """라벨 셀의 오른쪽 -> 아래쪽 순서로, 비어 있는 이웃 칸을 찾는다."""
+    for dr, dc in ((0, 1), (1, 0)):
+        r, c = row + dr, col + dc
+        if r < 1 or c < 1 or r > max_row or c > max_col:
+            continue
+        anchor = _merged_anchor(sheet, r, c)
+        if anchor.value in (None, "") and (anchor.row, anchor.column) != (row, col):
+            return anchor.row, anchor.column
+    return None
 
 
 def _iter_text_cells(sheet: Worksheet) -> list[tuple[str, str]]:
