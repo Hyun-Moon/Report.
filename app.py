@@ -45,21 +45,22 @@ def main(argv: list[str] | None = None) -> int:
         parser.error("--cli 모드에서는 --source 와 --template 이 필요합니다.")
 
     from reportgen.errors import ReportGenError
-    from reportgen.generator import run_from_profile
+    from reportgen.generator import auto_generate, run_from_profile
     from reportgen.mapping import load_mapping, mapping_path_for
 
     mapping_dir = os.path.join(base, "mappings")
     mapping_path = args.mapping or mapping_path_for(args.template, mapping_dir)
+    out_dir = args.out or os.path.join(base, "output")
 
     try:
         profile = load_mapping(mapping_path)
-        if profile is None:
-            print(f"매핑 파일이 없습니다: {mapping_path}", file=sys.stderr)
-            print("GUI 에서 한 번 매핑을 저장한 뒤 다시 실행해 주세요.", file=sys.stderr)
-            return 2
-        result = run_from_profile(
-            args.source, args.template, profile, args.out or os.path.join(base, "output")
-        )
+        if profile is not None:
+            result = run_from_profile(args.source, args.template, profile, out_dir)
+        else:
+            # 저장된 매핑이 없어도 실패시키지 않는다 — 원본의 모든 시트를 훑어
+            # 템플릿 태그와 이름이 맞는 표를 자동으로 찾아 완성한다(첫 실행 시
+            # 매핑을 새로 만들어 mappings/ 에 저장해 두므로 다음부터는 더 빨라진다).
+            result = auto_generate(args.source, args.template, out_dir, mapping_dir=mapping_dir)
     except ReportGenError as exc:
         print(str(exc), file=sys.stderr)
         return 1

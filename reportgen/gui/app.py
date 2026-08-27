@@ -36,7 +36,7 @@ from ..aggregator import (
 from ..data_reader import ReadOptions, Table, list_sheets, list_table_blocks, read_table
 from ..dateutils import month_label, parse_date
 from ..errors import ReportGenError
-from ..generator import GenerationRequest, Prepared, generate
+from ..generator import GenerationRequest, Prepared, auto_generate, generate
 from ..mapping import (
     BUILTIN_KEYS,
     Binding,
@@ -95,12 +95,14 @@ class ReportApp(ttk.Frame):
         self.notebook = ttk.Notebook(self)
         self.notebook.pack(fill="both", expand=True)
 
+        self.step0 = ttk.Frame(self.notebook, padding=10)
         self.step1 = ttk.Frame(self.notebook, padding=10)
         self.step2 = ttk.Frame(self.notebook, padding=10)
         self.step3 = ttk.Frame(self.notebook, padding=10)
         self.step4 = ttk.Frame(self.notebook, padding=10)
         self.step5 = ttk.Frame(self.notebook, padding=10)
         for frame, title in (
+            (self.step0, "⚡ 자동 완성"),
             (self.step1, "1. 원본 엑셀"),
             (self.step2, "2. 템플릿"),
             (self.step3, "3. 매핑"),
@@ -109,6 +111,7 @@ class ReportApp(ttk.Frame):
         ):
             self.notebook.add(frame, text=title)
 
+        self._build_step0()
         self._build_step1()
         self._build_step2()
         self._build_step3()
@@ -125,13 +128,165 @@ class ReportApp(ttk.Frame):
         self._set_step_enabled(1)
 
     def _set_step_enabled(self, up_to: int) -> None:
-        for index in range(5):
-            state = "normal" if index < up_to else "disabled"
-            self.notebook.tab(index, state=state)
+        self.notebook.tab(0, state="normal")  # 0단계(자동 완성)는 항상 켜 둔다
+        for offset in range(5):
+            state = "normal" if offset < up_to else "disabled"
+            self.notebook.tab(offset + 1, state=state)
 
     def _say(self, message: str) -> None:
         self.status.set(message)
         self.update_idletasks()
+
+    # ------------------------------------------------------------------ #
+    # 0단계 - 자동 완성 (원본/템플릿/저장 폴더만 고르면 끝)
+    # ------------------------------------------------------------------ #
+    def _build_step0(self) -> None:
+        frame = self.step0
+        ttk.Label(
+            frame,
+            text="원본 엑셀 · 템플릿 · 저장 폴더만 고르면 나머지는 자동으로 처리합니다.",
+            font=("", 10, "bold"),
+        ).pack(anchor="w")
+        ttk.Label(
+            frame,
+            text=(
+                "원본 워크북의 모든 시트를 훑어 템플릿 태그와 이름이 맞는 표를 자동으로 "
+                "찾습니다. 한 번 성공하면 다음부터 재사용하도록 매핑을 저장해 두므로 점점 "
+                "빨라집니다. 결과는 1~4단계에서 그대로 이어서 확인·수정할 수 있습니다."
+            ),
+            foreground="#666",
+            wraplength=560,
+            justify="left",
+        ).pack(anchor="w", pady=(2, 10))
+
+        src = ttk.LabelFrame(frame, text="① 원본 엑셀", padding=8)
+        src.pack(fill="x")
+        row = ttk.Frame(src)
+        row.pack(fill="x")
+        self.auto_src = tk.StringVar(value="")
+        ttk.Entry(row, textvariable=self.auto_src).pack(side="left", fill="x", expand=True)
+        ttk.Button(row, text="파일 선택…", command=self._auto_pick_source).pack(side="left", padx=(6, 0))
+
+        tpl = ttk.LabelFrame(frame, text="② 템플릿", padding=8)
+        tpl.pack(fill="x", pady=(8, 0))
+        row2 = ttk.Frame(tpl)
+        row2.pack(fill="x")
+        self.auto_tpl = tk.StringVar(value="")
+        ttk.Entry(row2, textvariable=self.auto_tpl).pack(side="left", fill="x", expand=True)
+        ttk.Button(row2, text="파일 선택…", command=self._auto_pick_template).pack(side="left", padx=(6, 0))
+
+        out = ttk.LabelFrame(frame, text="③ 저장 폴더", padding=8)
+        out.pack(fill="x", pady=(8, 0))
+        row3 = ttk.Frame(out)
+        row3.pack(fill="x")
+        self.auto_out = tk.StringVar(value=self.output_dir)
+        ttk.Entry(row3, textvariable=self.auto_out).pack(side="left", fill="x", expand=True)
+        ttk.Button(row3, text="폴더 선택…", command=self._auto_pick_output).pack(side="left", padx=(6, 0))
+
+        actions = ttk.Frame(frame)
+        actions.pack(fill="x", pady=(12, 0))
+        self.auto_button = ttk.Button(actions, text="자동으로 완성", command=self._auto_run)
+        self.auto_button.pack(side="left")
+        self.auto_progress = ttk.Progressbar(actions, mode="indeterminate", length=180)
+        self.auto_progress.pack(side="left", padx=(10, 0))
+
+        ttk.Label(
+            frame,
+            text=(
+                "※ 태그({{ }})가 하나도 없는 기존 서식 파일이거나, 시트 어디에도 태그와 "
+                "이름이 맞는 표가 없으면 자동으로 완성할 수 없습니다 — 그럴 땐 1~3단계에서 "
+                "한 번만 직접 연결해 매핑을 저장해 주세요."
+            ),
+            foreground="#a06000",
+            wraplength=560,
+            justify="left",
+        ).pack(anchor="w", pady=(8, 0))
+
+        result = ttk.LabelFrame(frame, text="결과", padding=6)
+        result.pack(fill="both", expand=True, pady=(8, 0))
+        self.auto_result_text = tk.Text(result, height=10, wrap="word")
+        scroll = ttk.Scrollbar(result, orient="vertical", command=self.auto_result_text.yview)
+        self.auto_result_text.configure(yscrollcommand=scroll.set, state="disabled")
+        self.auto_result_text.pack(side="left", fill="both", expand=True)
+        scroll.pack(side="right", fill="y")
+
+    def _auto_pick_source(self) -> None:
+        path = filedialog.askopenfilename(
+            title="원본 엑셀 선택", filetypes=[("엑셀 파일", "*.xlsx *.xlsm")]
+        )
+        if path:
+            self.auto_src.set(path)
+
+    def _auto_pick_template(self) -> None:
+        path = filedialog.askopenfilename(
+            title="템플릿 선택", filetypes=[("템플릿 파일", "*.docx *.xlsx *.xlsm")]
+        )
+        if path:
+            self.auto_tpl.set(path)
+
+    def _auto_pick_output(self) -> None:
+        path = filedialog.askdirectory(
+            title="저장 폴더 선택", initialdir=self.auto_out.get() or self.output_dir
+        )
+        if path:
+            self.auto_out.set(path)
+
+    def _auto_run(self) -> None:
+        src = self.auto_src.get().strip()
+        tpl = self.auto_tpl.get().strip()
+        out = self.auto_out.get().strip() or self.output_dir
+        if not src or not tpl:
+            messagebox.showinfo("안내", "원본 엑셀과 템플릿을 먼저 선택해 주세요.")
+            return
+
+        self.auto_button.configure(state="disabled")
+        self.auto_progress.start(12)
+        self._say("자동으로 완성하는 중입니다… (시트가 많으면 시간이 걸릴 수 있습니다)")
+
+        holder: dict[str, Any] = {}
+
+        def work() -> None:
+            try:
+                holder["result"] = auto_generate(
+                    src,
+                    tpl,
+                    out,
+                    mapping_dir=self.mapping_dir,
+                    author=os.environ.get("USERNAME") or os.environ.get("USER") or "",
+                )
+            except BaseException as exc:  # noqa: BLE001 - 스레드 밖으로 넘긴다
+                holder["error"] = exc
+                holder["trace"] = traceback.format_exc()
+
+        thread = threading.Thread(target=work, daemon=True)
+        thread.start()
+        self._poll_auto(thread, holder)
+
+    def _poll_auto(self, thread: threading.Thread, holder: dict[str, Any]) -> None:
+        if thread.is_alive():
+            self.after(150, lambda: self._poll_auto(thread, holder))
+            return
+
+        self.auto_progress.stop()
+        self.auto_button.configure(state="normal")
+
+        if "error" in holder:
+            self._write_auto_result(holder.get("trace", ""))
+            show_error("자동 완성 실패", holder["error"])
+            self._say("자동 완성에 실패했습니다.")
+            return
+
+        result = holder["result"]
+        self._write_auto_result(result.summary())
+        self._say(f"자동 완성 완료: 파일 {len(result.files)}개")
+        messagebox.showinfo("완료", result.summary())
+
+    def _write_auto_result(self, text: str) -> None:
+        self.auto_result_text.configure(state="normal")
+        self.auto_result_text.delete("1.0", "end")
+        stamp = _dt.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        self.auto_result_text.insert("1.0", f"[{stamp}]\n{text}\n")
+        self.auto_result_text.configure(state="disabled")
 
     # ------------------------------------------------------------------ #
     # 1단계 - 원본 엑셀

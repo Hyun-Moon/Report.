@@ -40,6 +40,7 @@ __all__ = [
     "list_sheets",
     "parse_range",
     "list_table_blocks",
+    "quick_header_preview",
     "FormulaCacheError",
 ]
 
@@ -267,6 +268,29 @@ def _connected_components(cells: set[tuple[int, int]]) -> list[list[tuple[int, i
                     group.append(neighbor)
         components.append(group)
     return components
+
+
+def quick_header_preview(path: str, sheet_name: str, cell_range: str, header_rows: int = 1) -> list[str]:
+    """표 후보의 컬럼 이름만 빠르게 읽는다 (수식 계산 없이).
+
+    '완전 자동 완성' 기능이 워크북의 모든 시트 · 모든 표 후보를 템플릿 태그와
+    비교할 때 쓴다. 후보가 수십 개일 수 있어 매번 :class:`WorkbookFormulaEngine`
+    을 돌리면 느리므로, 여기서는 캐시된 값만으로 헤더 텍스트만 뽑는다. 최종
+    선택된 표 하나만 :func:`read_table` 로 다시 정확히 읽는다.
+    """
+    workbook = _open_workbook(path, data_only=True)
+    try:
+        sheet = _pick_sheet(workbook, sheet_name, path)
+        merged = _merged_lookup(sheet)
+        row1, col1, row2, col2 = parse_range(cell_range)
+        grid = _read_grid(sheet, merged, row1, col1, row2, col2)
+        if not grid:
+            return []
+        rows = _detect_header_rows(grid, header_rows)
+        rows = min(rows, len(grid))
+        return _build_columns(grid[:rows], col1)
+    finally:
+        workbook.close()
 
 
 def read_table(path: str, options: Optional[ReadOptions] = None) -> Table:
