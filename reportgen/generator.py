@@ -346,7 +346,9 @@ def auto_generate(
         bindings = profile.bindings
         agg = profile.aggregation or {}
     else:
-        sheet_name, cell_range, table, bindings, score = _auto_pick_table(source_path, slots)
+        sheet_name, cell_range, table, bindings, score, candidates = _auto_pick_table(
+            source_path, slots
+        )
         if table is None:
             unit = "라벨" if used_label_inference else "태그"
             raise ReportGenError(
@@ -378,6 +380,12 @@ def auto_generate(
             note += " 연결 내역: " + ", ".join(matched_pairs[:10])
             if len(matched_pairs) > 10:
                 note += f" 외 {len(matched_pairs) - 10}건"
+        # 다른 후보들도 점수와 함께 남긴다 — 엉뚱한 표가 뽑혔을 때, 원본
+        # 파일을 직접 못 보는 상황에서도 이 문구만으로 원인을 추적할 수 있게.
+        runner_ups = [c for c in candidates if not (c.sheet_name == sheet_name and c.cell_range == cell_range)]
+        if runner_ups:
+            top = ", ".join(f"{c.sheet_name}!{c.cell_range}({c.score}점)" for c in runner_ups[:4])
+            note += f" [비교한 다른 후보: {top}]"
         note += " 3단계에서 한 번 확인해 보는 것을 권합니다."
         if agg.get("enabled"):
             note += " 일 단위 데이터로 보여 월 단위로 자동 집계했습니다."
@@ -419,13 +427,27 @@ def auto_generate(
     return result
 
 
+@dataclass
+class _TableCandidate:
+    sheet_name: str
+    cell_range: str
+    score: int
+
+
 def _auto_pick_table(
     source_path: str, slots: list[TemplateSlot]
-) -> tuple[Optional[str], Optional[str], Optional[Table], dict[str, Binding], int]:
-    """원본 워크북의 모든 시트 · 모든 표 후보 중 템플릿과 가장 잘 맞는 것을 고른다."""
+) -> tuple[Optional[str], Optional[str], Optional[Table], dict[str, Binding], int, list[_TableCandidate]]:
+    """원본 워크북의 모든 시트 · 모든 표 후보 중 템플릿과 가장 잘 맞는 것을 고른다.
+
+    ``candidates`` (반환값의 마지막 항목)에 점수를 매긴 표 후보들을 점수순으로
+    담아 함께 돌려준다 — 원본 파일을 직접 볼 수 없는 상황에서, 엉뚱한 표가
+    뽑혔을 때도 결과 화면에 나온 텍스트만으로 "어떤 후보들을 비교했고 왜
+    그게 뽑혔는지"를 알 수 있게 하기 위해서다.
+    """
     best_score = 0
     best_sheet: Optional[str] = None
     best_range: Optional[str] = None
+    candidates: list[_TableCandidate] = []
 
     for sheet_name in list_sheets(source_path):
         try:
@@ -442,13 +464,17 @@ def _auto_pick_table(
             if not columns:
                 continue
             _bindings, rank_score = _match_quality(slots, columns)
+            if rank_score > 0:
+                candidates.append(_TableCandidate(sheet_name, block.range, rank_score))
             if rank_score > best_score:
                 best_score = rank_score
                 best_sheet = sheet_name
                 best_range = block.range
 
+    candidates.sort(key=lambda c: c.score, reverse=True)
+
     if best_score <= 0 or best_sheet is None or best_range is None:
-        return None, None, None, {}, 0
+        return None, None, None, {}, 0, candidates
 
     table = read_table(
         source_path,
@@ -461,7 +487,7 @@ def _auto_pick_table(
     )
     bindings, _rank_score = _match_quality(slots, table.columns)
     final_score = sum(1 for b in bindings.values() if b.source == "column")
-    return best_sheet, best_range, table, bindings, final_score
+    return best_sheet, best_range, table, bindings, final_score, candidates
 
 
 def _match_quality(slots: list[TemplateSlot], columns: list[str]) -> tuple[dict[str, Binding], int]:

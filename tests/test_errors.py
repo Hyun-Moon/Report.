@@ -303,13 +303,25 @@ def test_auto_generate() -> None:
         result = auto_generate(source_path, tag_template, output_dir, mapping_dir=mapping_dir)
         ok = (
             len(result.files) == 1
-            and "에너지사용량" in result.warnings[0]
-            and "설비목록" not in result.warnings[0]
+            and result.warnings[0].startswith("'에너지사용량' 시트")
+            and "사용량 → 사용량" in result.warnings[0]
+            and "전력 → 전력" in result.warnings[0]
         )
         label = "태그 템플릿: 관계없는 시트를 걸러내고 실제 데이터 시트를 골라 연결"
         print(f"  {'OK  ' if ok else 'FAIL'} {label}")
         if not ok:
             FAILURES.append(label)
+            print(f"         -> {result.warnings[:1]}")
+
+        # 진단용: 만약 나중에 엉뚱한 표가 뽑히더라도, 파일을 못 보는 상황에서
+        # 결과 문구만으로 원인을 알 수 있어야 한다 — 비교한 다른 후보(설비목록)가
+        # 점수와 함께 남는지 확인한다.
+        ok_diag = "비교한 다른 후보" in result.warnings[0] and "설비목록" in result.warnings[0]
+        label_diag = "태그 템플릿: 결과 문구에 비교한 다른 후보(진단용)가 점수와 함께 남음"
+        print(f"  {'OK  ' if ok_diag else 'FAIL'} {label_diag}")
+        if not ok_diag:
+            FAILURES.append(label_diag)
+            print(f"         -> {result.warnings[:1]}")
 
         # 재사용: 저장된 매핑이 있으면 다시 훑지 않고 그대로 써야 한다
         # (재탐색 시 나오는 '자동으로 연결했습니다' 안내문이 없어야 함).
