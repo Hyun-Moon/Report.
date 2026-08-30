@@ -5,6 +5,13 @@
 사용량 등)이 들어 있다. 월간 보고서를 만들려면 그런 파일을 그 달치만큼
 모아서, 파일마다 '그날의 요약 행'을 하나씩 뽑아 날짜순으로 쌓아야 한다.
 
+설비마다 양식이 다른 것도 (공조기 일지와 냉동기 일지는 시트 이름도 표
+위치도 다르다) **한 번에 월간표 하나로** 합칠 수 있다: 설비별로 읽는 방법을
+:class:`SourceSpec` 하나씩 정의해 :func:`build_combined_monthly_table` 에
+넘기면, 각 설비에서 뽑은 하루치 값을 **날짜를 기준으로 한 줄에 나란히**
+붙인다. 컬럼 이름은 설비 이름을 앞에 붙여(``'공조기 · 가동시간'``) 서로
+겹치지 않게 한다.
+
 이 모듈은 그 취합만 담당한다. 결과는 보통의 :class:`~reportgen.data_reader.Table`
 과 똑같은 모양(컬럼 + 행)으로 나오므로, 그 뒤로는 기존 매핑/생성 파이프라인을
 그대로 쓸 수 있다 — 실제로 GUI 는 이 결과를 엑셀 파일로 저장해서, '1단계
@@ -28,10 +35,12 @@ from .errors import MultiFileError, ReportGenError
 __all__ = [
     "DailyRowSpec",
     "DailyExtraction",
+    "SourceSpec",
     "list_daily_files",
     "extract_date",
     "preview_daily_file",
     "build_monthly_table",
+    "build_combined_monthly_table",
     "save_table_as_excel",
 ]
 
@@ -146,18 +155,29 @@ def preview_daily_file(path: str, options: Optional[ReadOptions] = None) -> Tabl
     return read_table(path, options)
 
 
-def build_monthly_table(
-    folder: str,
-    spec: DailyRowSpec,
-    options: Optional[ReadOptions] = None,
-    date_column_name: str = "날짜",
-) -> tuple[Table, list[str]]:
-    """폴더 안의 날짜별 파일을 전부 읽어, 파일마다 지정한 행을 뽑아 한 달치 표로 합친다.
+@dataclass
+class SourceSpec:
+    """설비 하나(폴더 하나)를 읽는 방법.
 
-    돌려주는 두 번째 값(경고 목록)에는 날짜를 못 찾았거나, 지정한 행 번호가
-    그 파일에 없거나, 읽는 중 오류가 난 파일이 무엇이었는지 남긴다 — 원본을
-    직접 보지 않고도 어떤 날짜가 왜 빠졌는지 알 수 있게 하기 위해서다.
+    설비마다 양식이 다르므로 — 공조기 일지와 냉동기 일지는 시트 이름도 표
+    위치도 다르다 — 폴더별로 이 묶음을 하나씩 만들어
+    :func:`build_combined_monthly_table` 에 넘긴다.
+
+    ``name`` 은 합쳐진 표에서 컬럼 이름 앞에 붙는다(``'공조기 · 가동시간'``).
+    설비끼리 컬럼 이름이 같아도(둘 다 '가동시간') 섞이지 않게 하기 위한 것이라
+    비워 두면 안 된다.
     """
+
+    name: str
+    folder: str
+    spec: DailyRowSpec
+    options: Optional[ReadOptions] = None
+
+
+def _extract_by_date(
+    folder: str, spec: DailyRowSpec, options: Optional[ReadOptions]
+) -> tuple[dict[_dt.date, dict[str, Any]], list[str], list[str]]:
+    """폴더 하나에서 ``{날짜: {컬럼: 값}}`` 과 컬럼 순서, 경고를 뽑아낸다."""
     if not spec.row_indexes:
         raise MultiFileError(
             "가져올 행 번호를 하나 이상 지정해 주세요.",
@@ -219,6 +239,23 @@ def build_monthly_table(
             warnings.append(f"{name}: 같은 날짜({day.isoformat()})의 다른 파일과 겹쳐 나중 파일로 덮어씀")
         by_date[day] = row_dict
 
+    return by_date, columns, warnings
+
+
+def build_monthly_table(
+    folder: str,
+    spec: DailyRowSpec,
+    options: Optional[ReadOptions] = None,
+    date_column_name: str = "날짜",
+) -> tuple[Table, list[str]]:
+    """폴더 안의 날짜별 파일을 전부 읽어, 파일마다 지정한 행을 뽑아 한 달치 표로 합친다.
+
+    돌려주는 두 번째 값(경고 목록)에는 날짜를 못 찾았거나, 지정한 행 번호가
+    그 파일에 없거나, 읽는 중 오류가 난 파일이 무엇이었는지 남긴다 — 원본을
+    직접 보지 않고도 어떤 날짜가 왜 빠졌는지 알 수 있게 하기 위해서다.
+    """
+    by_date, columns, warnings = _extract_by_date(folder, spec, options)
+
     if not by_date:
         raise MultiFileError(
             "폴더의 파일에서 월간표에 넣을 값을 하나도 뽑지 못했습니다.",
@@ -233,6 +270,102 @@ def build_monthly_table(
         rows.append([day] + [values.get(col) for col in columns])
 
     table = Table(columns=all_columns, rows=rows, sheet_name="월간취합", source_path=folder)
+    return table, warnings
+
+
+def build_combined_monthly_table(
+    sources: list[SourceSpec],
+    date_column_name: str = "날짜",
+) -> tuple[Table, list[str]]:
+    """여러 설비(폴더)를 **한 번에 월간표 하나로** 합친다.
+
+    설비마다 양식이 달라도 된다 — 폴더별로 시트/범위/행 번호를 따로 정하기
+    때문이다. 각 설비에서 뽑은 하루치 값을 **날짜를 기준으로 한 줄에 나란히**
+    붙이고, 컬럼 이름 앞에 설비 이름을 붙여(``'공조기 · 가동시간'``) 설비끼리
+    이름이 같아도 섞이지 않게 한다.
+
+    어떤 설비에 그 날짜 파일이 없으면 그 칸만 비워 둔다(그 날짜 줄 전체가
+    빠지지는 않는다) — 설비마다 기록이 시작된 날이 다를 수 있기 때문이다.
+    빠진 칸은 경고로 남겨 어떤 설비의 며칠 치가 없는지 알 수 있게 한다.
+    """
+    if not sources:
+        raise MultiFileError(
+            "합칠 원본을 하나 이상 추가해 주세요.",
+            "설비(폴더)마다 한 줄씩 추가한 뒤 다시 시도해 주세요.",
+        )
+
+    seen_names: set[str] = set()
+    for source in sources:
+        if not source.name.strip():
+            raise MultiFileError(
+                "원본 이름이 비어 있습니다.",
+                "합쳐진 표에서 컬럼을 구분하려면 설비 이름(예: 공조기, 냉동기)이 필요합니다.",
+            )
+        if source.name in seen_names:
+            raise MultiFileError(
+                f"원본 이름 '{source.name}' 이(가) 중복됩니다.",
+                "설비 이름은 서로 달라야 컬럼이 섞이지 않습니다.",
+            )
+        seen_names.add(source.name)
+
+    warnings: list[str] = []
+    merged: dict[_dt.date, dict[str, Any]] = {}
+    all_columns: list[str] = []
+    days_by_source: dict[str, set[_dt.date]] = {}
+
+    for source in sources:
+        try:
+            by_date, columns, source_warnings = _extract_by_date(
+                source.folder, source.spec, source.options
+            )
+        except MultiFileError as exc:
+            # 설비 하나가 실패해도 나머지는 살린다 — 한 폴더 때문에 전체가
+            # 날아가면 '한 번에 하나로 합치기'가 무의미해진다.
+            warnings.append(f"[{source.name}] 건너뜀: {exc.message}")
+            continue
+
+        warnings.extend(f"[{source.name}] {w}" for w in source_warnings)
+        if not by_date:
+            warnings.append(f"[{source.name}] 이 폴더에서는 값을 하나도 뽑지 못해 빠졌습니다.")
+            continue
+
+        days_by_source[source.name] = set(by_date)
+        prefix = f"{source.name} · "
+        for column in columns:
+            key = f"{prefix}{column}"
+            if key not in all_columns:
+                all_columns.append(key)
+        for day, values in by_date.items():
+            slot = merged.setdefault(day, {})
+            for column, value in values.items():
+                slot[f"{prefix}{column}"] = value
+
+    if not merged:
+        raise MultiFileError(
+            "어느 폴더에서도 월간표에 넣을 값을 뽑지 못했습니다.",
+            "폴더 경로·행 번호·시트 범위가 맞는지 미리보기로 다시 확인해 주세요.",
+        )
+
+    ordered_days = sorted(merged)
+    # 설비마다 비는 날짜가 있으면 알려 준다 (그 줄 전체를 버리지는 않는다).
+    for name, days in days_by_source.items():
+        missing = [d for d in ordered_days if d not in days]
+        if missing:
+            preview = ", ".join(d.isoformat() for d in missing[:5])
+            more = f" 외 {len(missing) - 5}일" if len(missing) > 5 else ""
+            warnings.append(f"[{name}] 다른 설비엔 있는데 이 설비엔 없는 날짜 {len(missing)}일: {preview}{more}")
+
+    rows: list[list[Any]] = []
+    for day in ordered_days:
+        values = merged[day]
+        rows.append([day] + [values.get(col) for col in all_columns])
+
+    table = Table(
+        columns=[date_column_name] + all_columns,
+        rows=rows,
+        sheet_name="월간취합",
+        source_path=sources[0].folder,
+    )
     return table, warnings
 
 

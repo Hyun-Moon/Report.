@@ -39,7 +39,8 @@ from ..errors import ReportGenError
 from ..generator import GenerationRequest, Prepared, auto_generate, generate
 from ..multifile import (
     DailyRowSpec,
-    build_monthly_table,
+    SourceSpec,
+    build_combined_monthly_table,
     extract_date,
     list_daily_files,
     preview_daily_file,
@@ -308,86 +309,102 @@ class ReportApp(ttk.Frame):
         frame = self.step_multi
         ttk.Label(
             frame,
-            text="파일 하나 = 하루치인 로그 파일을 모아 월간표(하루 1행)로 만듭니다.",
+            text="파일 하나 = 하루치인 로그 파일들을 모아 월간표(하루 1행)로 만듭니다.",
             font=("", 10, "bold"),
         ).pack(anchor="w")
         ttk.Label(
             frame,
             text=(
-                "예: 공조기/냉동기 운전일지처럼 매일 새 파일이 생기고, 그 안에 그날 "
-                "시간별 데이터와 맨 아래 그날 요약값(일사용량 등)이 있는 경우. 만든 "
-                "월간표는 파일로 저장되어, 그대로 '1단계 원본 엑셀'에 넣어 이어서 "
-                "쓸 수 있습니다."
+                "설비가 여러 종류여도(공조기·냉동기·유량계처럼 양식이 서로 달라도) "
+                "설비별로 한 줄씩 목록에 추가하면 날짜를 기준으로 한 표에 나란히 "
+                "합칩니다. 만든 월간표는 파일로 저장되어, 그대로 '1단계 원본 엑셀'에 "
+                "넣어 이어서 쓸 수 있습니다."
             ),
             foreground="#666",
-            wraplength=560,
+            wraplength=620,
             justify="left",
-        ).pack(anchor="w", pady=(2, 10))
+        ).pack(anchor="w", pady=(2, 8))
 
-        folder_box = ttk.LabelFrame(frame, text="① 그 달의 파일이 모여 있는 폴더", padding=8)
-        folder_box.pack(fill="x")
-        row = ttk.Frame(folder_box)
-        row.pack(fill="x")
+        setup = ttk.LabelFrame(frame, text="원본 추가 (설비 하나 = 폴더 하나)", padding=8)
+        setup.pack(fill="x")
+
+        row0 = ttk.Frame(setup)
+        row0.pack(fill="x", pady=2)
+        ttk.Label(row0, text="설비 이름", width=10).pack(side="left")
+        self.multi_name = tk.StringVar()
+        ttk.Entry(row0, textvariable=self.multi_name, width=20).pack(side="left")
+        ttk.Label(
+            row0, text="예: 공조기 (컬럼 이름 앞에 붙어 설비끼리 구분됨)", foreground="#666"
+        ).pack(side="left", padx=(6, 0))
+
+        row = ttk.Frame(setup)
+        row.pack(fill="x", pady=2)
+        ttk.Label(row, text="폴더", width=10).pack(side="left")
         self.multi_folder = tk.StringVar()
         ttk.Entry(row, textvariable=self.multi_folder).pack(side="left", fill="x", expand=True)
         ttk.Button(row, text="폴더 선택…", command=self._multi_pick_folder).pack(side="left", padx=(6, 0))
 
-        range_box = ttk.LabelFrame(frame, text="② 파일 하나 안에서 읽을 범위 (전부 같은 양식이라고 가정)", padding=8)
-        range_box.pack(fill="x", pady=(8, 0))
-        r1 = ttk.Frame(range_box)
+        r1 = ttk.Frame(setup)
         r1.pack(fill="x", pady=2)
         ttk.Label(r1, text="시트", width=10).pack(side="left")
         self.multi_sheet = tk.StringVar()
-        ttk.Entry(r1, textvariable=self.multi_sheet, width=20).pack(side="left")
-        ttk.Label(r1, text="셀 범위", width=10).pack(side="left", padx=(16, 0))
+        ttk.Entry(r1, textvariable=self.multi_sheet, width=18).pack(side="left")
+        ttk.Label(r1, text="셀 범위", width=8).pack(side="left", padx=(12, 0))
         self.multi_range = tk.StringVar()
-        ttk.Entry(r1, textvariable=self.multi_range, width=16).pack(side="left")
-        ttk.Label(r1, text="예: A3:C11 (헤더 포함)", foreground="#666").pack(side="left", padx=(6, 0))
-        ttk.Label(r1, text="헤더 행 수", width=10).pack(side="left", padx=(16, 0))
+        ttk.Entry(r1, textvariable=self.multi_range, width=14).pack(side="left")
+        ttk.Label(r1, text="예: A3:C11", foreground="#666").pack(side="left", padx=(4, 0))
+        ttk.Label(r1, text="헤더 행 수", width=9).pack(side="left", padx=(12, 0))
         self.multi_header_rows = tk.IntVar(value=1)
         ttk.Spinbox(r1, from_=1, to=5, width=4, textvariable=self.multi_header_rows).pack(side="left")
-        ttk.Button(r1, text="샘플 미리보기", command=self._multi_preview).pack(side="left", padx=(16, 0))
+        ttk.Button(r1, text="샘플 미리보기", command=self._multi_preview).pack(side="left", padx=(12, 0))
 
         self.multi_preview_status = tk.StringVar(value="")
-        ttk.Label(range_box, textvariable=self.multi_preview_status, foreground="#666").pack(
+        ttk.Label(setup, textvariable=self.multi_preview_status, foreground="#666").pack(
             anchor="w", pady=(4, 0)
         )
-        self.multi_preview_view = TableView(range_box, height=8)
+        self.multi_preview_view = TableView(setup, height=6)
         self.multi_preview_view.pack(fill="both", expand=True, pady=(4, 0))
         ttk.Label(
-            range_box,
+            setup,
             text="맨 왼쪽 '#' 열이 행 번호입니다(0부터). 그날 요약값이 있는 행 번호를 아래에 적어 주세요.",
             foreground="#666",
         ).pack(anchor="w", pady=(2, 0))
 
-        pick_box = ttk.LabelFrame(frame, text="③ 그날 요약으로 가져올 행", padding=8)
-        pick_box.pack(fill="x", pady=(8, 0))
-        r2 = ttk.Frame(pick_box)
+        r2 = ttk.Frame(setup)
         r2.pack(fill="x", pady=2)
         ttk.Label(r2, text="행 번호", width=10).pack(side="left")
         self.multi_rows_entry = tk.StringVar()
-        ttk.Entry(r2, textvariable=self.multi_rows_entry, width=16).pack(side="left")
-        ttk.Label(r2, text="쉼표로 구분, 예: 6,7", foreground="#666").pack(side="left", padx=(6, 0))
-        r3 = ttk.Frame(pick_box)
-        r3.pack(fill="x", pady=2)
-        ttk.Label(r3, text="행 이름표", width=10).pack(side="left")
+        ttk.Entry(r2, textvariable=self.multi_rows_entry, width=14).pack(side="left")
+        ttk.Label(r2, text="쉼표로 구분, 예: 6,7", foreground="#666").pack(side="left", padx=(4, 0))
+        ttk.Label(r2, text="행 이름표", width=9).pack(side="left", padx=(12, 0))
         self.multi_labels_entry = tk.StringVar()
-        ttk.Entry(r3, textvariable=self.multi_labels_entry, width=16).pack(side="left")
-        ttk.Label(
-            r3, text="행을 2개 이상 고를 때만. 예: TON,N/M3 (컬럼 이름 뒤에 붙어 구분됨)", foreground="#666"
-        ).pack(side="left", padx=(6, 0))
-        r4 = ttk.Frame(pick_box)
-        r4.pack(fill="x", pady=2)
-        ttk.Label(r4, text="가져올 컬럼", width=10).pack(side="left")
+        ttk.Entry(r2, textvariable=self.multi_labels_entry, width=14).pack(side="left")
+        ttk.Label(r2, text="행 2개 이상일 때. 예: TON,N/M3", foreground="#666").pack(side="left", padx=(4, 0))
+
+        r3 = ttk.Frame(setup)
+        r3.pack(fill="x", pady=2)
+        ttk.Label(r3, text="가져올 컬럼", width=10).pack(side="left")
         self.multi_columns_entry = tk.StringVar()
-        ttk.Entry(r4, textvariable=self.multi_columns_entry, width=30).pack(side="left")
-        ttk.Label(r4, text="쉼표로 구분, 비우면 전체 컬럼", foreground="#666").pack(side="left", padx=(6, 0))
+        ttk.Entry(r3, textvariable=self.multi_columns_entry, width=34).pack(side="left")
+        ttk.Label(r3, text="쉼표로 구분, 비우면 전체 컬럼", foreground="#666").pack(side="left", padx=(4, 0))
+        ttk.Button(r3, text="＋ 목록에 추가", command=self._multi_add_source).pack(side="left", padx=(12, 0))
+
+        list_box = ttk.LabelFrame(frame, text="합칠 원본 목록", padding=8)
+        list_box.pack(fill="x", pady=(8, 0))
+        self.multi_listbox = tk.Listbox(list_box, height=4)
+        self.multi_listbox.pack(side="left", fill="both", expand=True)
+        list_buttons = ttk.Frame(list_box)
+        list_buttons.pack(side="left", padx=(6, 0))
+        ttk.Button(list_buttons, text="선택 삭제", command=self._multi_remove_source).pack(fill="x")
+        ttk.Button(list_buttons, text="전체 비우기", command=self._multi_clear_sources).pack(
+            fill="x", pady=(4, 0)
+        )
 
         actions = ttk.Frame(frame)
         actions.pack(fill="x", pady=(10, 0))
         self.multi_build_button = ttk.Button(actions, text="월간표 만들기", command=self._multi_build)
         self.multi_build_button.pack(side="left")
-        self.multi_progress = ttk.Progressbar(actions, mode="indeterminate", length=180)
+        self.multi_progress = ttk.Progressbar(actions, mode="indeterminate", length=160)
         self.multi_progress.pack(side="left", padx=(10, 0))
         self.multi_use_button = ttk.Button(
             actions, text="이 결과를 1단계 원본으로 사용", command=self._multi_use_output, state="disabled"
@@ -396,18 +413,76 @@ class ReportApp(ttk.Frame):
 
         result = ttk.LabelFrame(frame, text="결과", padding=6)
         result.pack(fill="both", expand=True, pady=(8, 0))
-        self.multi_result_text = tk.Text(result, height=8, wrap="word")
+        self.multi_result_text = tk.Text(result, height=7, wrap="word")
         scroll = ttk.Scrollbar(result, orient="vertical", command=self.multi_result_text.yview)
         self.multi_result_text.configure(yscrollcommand=scroll.set, state="disabled")
         self.multi_result_text.pack(side="left", fill="both", expand=True)
         scroll.pack(side="right", fill="y")
 
         self.multi_output_path: str = ""
+        self.multi_sources: list[SourceSpec] = []
 
     def _multi_pick_folder(self) -> None:
         path = filedialog.askdirectory(title="그 달의 파일이 모여 있는 폴더 선택")
         if path:
             self.multi_folder.set(path)
+            if not self.multi_name.get().strip():
+                # 폴더 이름을 설비 이름 기본값으로 (대부분 '공조기', '냉동기' 처럼 되어 있다)
+                self.multi_name.set(os.path.basename(os.path.normpath(path)))
+
+    def _multi_add_source(self) -> None:
+        name = self.multi_name.get().strip()
+        folder = self.multi_folder.get().strip()
+        if not name:
+            messagebox.showinfo("안내", "설비 이름을 적어 주세요. 합쳐진 표에서 컬럼을 구분하는 데 씁니다.")
+            return
+        if not folder:
+            messagebox.showinfo("안내", "폴더를 먼저 선택해 주세요.")
+            return
+        if any(s.name == name for s in self.multi_sources):
+            messagebox.showinfo("안내", f"'{name}' 은(는) 이미 목록에 있습니다. 다른 이름을 써 주세요.")
+            return
+        spec = self._multi_spec()
+        if spec is None:
+            return
+
+        self.multi_sources.append(
+            SourceSpec(name=name, folder=folder, spec=spec, options=self._multi_read_options())
+        )
+        self._multi_refresh_list()
+        # 다음 설비를 바로 입력할 수 있게 비운다 (폴더/범위는 설비마다 다르므로)
+        self.multi_name.set("")
+        self.multi_folder.set("")
+        self.multi_sheet.set("")
+        self.multi_range.set("")
+        self.multi_rows_entry.set("")
+        self.multi_labels_entry.set("")
+        self.multi_columns_entry.set("")
+        self.multi_preview_status.set("")
+        self._say(f"'{name}' 을(를) 목록에 추가했습니다. 다음 설비를 추가하거나 [월간표 만들기]를 누르세요.")
+
+    def _multi_remove_source(self) -> None:
+        selection = self.multi_listbox.curselection()
+        if not selection:
+            messagebox.showinfo("안내", "목록에서 지울 항목을 골라 주세요.")
+            return
+        del self.multi_sources[selection[0]]
+        self._multi_refresh_list()
+
+    def _multi_clear_sources(self) -> None:
+        self.multi_sources.clear()
+        self._multi_refresh_list()
+
+    def _multi_refresh_list(self) -> None:
+        self.multi_listbox.delete(0, "end")
+        for source in self.multi_sources:
+            rows = ",".join(str(i) for i in source.spec.row_indexes)
+            where = source.options.cell_range if source.options else ""
+            self.multi_listbox.insert(
+                "end",
+                f"{source.name}  ·  {os.path.basename(os.path.normpath(source.folder))}  "
+                f"({where or '자동'}, 행 {rows})",
+            )
 
     def _multi_read_options(self) -> ReadOptions:
         return ReadOptions(
@@ -465,31 +540,44 @@ class ReportApp(ttk.Frame):
         return DailyRowSpec(row_indexes=row_indexes, row_labels=row_labels, columns=columns)
 
     def _multi_build(self) -> None:
-        folder = self.multi_folder.get().strip()
-        if not folder:
-            messagebox.showinfo("안내", "먼저 폴더를 선택해 주세요.")
-            return
-        spec = self._multi_spec()
-        if spec is None:
-            return
+        sources = list(self.multi_sources)
+        if not sources:
+            # 목록이 비었으면, 지금 화면에 입력된 것 하나만으로 진행한다
+            # (설비가 하나뿐인 사람이 [목록에 추가]를 안 눌러도 되도록).
+            folder = self.multi_folder.get().strip()
+            if not folder:
+                messagebox.showinfo("안내", "폴더를 선택하고 [＋ 목록에 추가]를 눌러 주세요.")
+                return
+            spec = self._multi_spec()
+            if spec is None:
+                return
+            name = self.multi_name.get().strip() or os.path.basename(os.path.normpath(folder))
+            sources = [
+                SourceSpec(name=name, folder=folder, spec=spec, options=self._multi_read_options())
+            ]
 
         self.multi_build_button.configure(state="disabled")
         self.multi_use_button.configure(state="disabled")
         self.multi_progress.start(12)
-        self._say("여러 파일을 모아 월간표를 만드는 중입니다…")
+        self._say(f"원본 {len(sources)}개를 모아 월간표를 만드는 중입니다…")
 
-        options = self._multi_read_options()
         holder: dict[str, Any] = {}
 
         def work() -> None:
             try:
-                table, warnings = build_monthly_table(folder, spec, options)
-                folder_name = os.path.basename(os.path.normpath(folder)) or "월간취합"
-                out_path = os.path.join(self.output_dir, f"월간취합_{folder_name}.xlsx")
+                table, warnings = build_combined_monthly_table(sources)
+                if len(sources) == 1:
+                    stem = os.path.basename(os.path.normpath(sources[0].folder)) or "월간취합"
+                else:
+                    stem = "통합_" + "_".join(s.name for s in sources[:3])
+                    if len(sources) > 3:
+                        stem += f"_외{len(sources) - 3}"
+                out_path = os.path.join(self.output_dir, f"월간취합_{stem}.xlsx")
                 saved = save_table_as_excel(table, out_path)
                 holder["table"] = table
                 holder["warnings"] = warnings
                 holder["path"] = saved
+                holder["count"] = len(sources)
             except BaseException as exc:  # noqa: BLE001 - 스레드 밖으로 넘긴다
                 holder["error"] = exc
                 holder["trace"] = traceback.format_exc()
@@ -520,15 +608,17 @@ class ReportApp(ttk.Frame):
         matrix = table.preview(limit=200)
         self.multi_preview_view.load_matrix(matrix)
 
-        lines = [f"{table.n_rows}일치를 모아 저장했습니다: {path}"]
+        count = holder.get("count", 1)
+        headline = f"원본 {count}개 · {table.n_rows}일치를 한 표로 합쳐 저장했습니다: {path}"
+        lines = [headline, "", f"컬럼: {', '.join(table.columns)}"]
         if warnings:
             lines.append("")
             lines.append("[건너뛴 파일 / 참고]")
             lines.extend(f"  - {w}" for w in warnings)
         self._write_multi_result("\n".join(lines))
-        self._say(f"월간표 완료: {table.n_rows}일치")
+        self._say(f"월간표 완료: 원본 {count}개 · {table.n_rows}일치")
         self.multi_use_button.configure(state="normal")
-        messagebox.showinfo("완료", f"{table.n_rows}일치를 모아 저장했습니다.\n\n{path}")
+        messagebox.showinfo("완료", f"{headline}")
 
     def _multi_use_output(self) -> None:
         if not self.multi_output_path:

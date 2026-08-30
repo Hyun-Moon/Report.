@@ -502,6 +502,164 @@ def test_multifile_consolidation() -> None:
             print(f"  FAIL {label4}: 오류가 나지 않음")
 
 
+def test_multifile_combined() -> None:
+    """설비별 양식이 달라도 **한 번에 월간표 하나로** 합쳐지는지 확인.
+
+    실무에서는 공조기·냉동기·유량계 일지가 시트 이름도 표 위치도 서로 다르다.
+    설비별로 읽는 방법을 따로 정해서 넘기면, 날짜를 기준으로 한 줄에 나란히
+    붙어야 한다. 설비마다 기록이 빠진 날이 있어도 그 줄 전체가 사라지면 안
+    된다(그 칸만 비고 경고로 남아야 한다).
+    """
+    import datetime as dt
+
+    from openpyxl import Workbook
+
+    from reportgen.data_reader import ReadOptions, read_table
+    from reportgen.errors import ReportGenError
+    from reportgen.multifile import (
+        DailyRowSpec,
+        SourceSpec,
+        build_combined_monthly_table,
+        save_table_as_excel,
+    )
+
+    print("\n[📁 여러 설비를 한 번에 월간표 하나로 합치기]")
+
+    with tempfile.TemporaryDirectory() as tmp:
+        flow_dir = os.path.join(tmp, "유량계")
+        ahu_dir = os.path.join(tmp, "공조기")
+        os.makedirs(flow_dir)
+        os.makedirs(ahu_dir)
+
+        def make_flow(day: int, ton: int, nm3: int) -> None:
+            wb = Workbook()
+            sheet = wb.active
+            sheet.title = "DailyReport"
+            sheet["A1"] = f"2026년 8월 {day}일"
+            sheet["A3"] = "구분"
+            sheet["B3"] = "가스유량"
+            sheet["C3"] = "전력"
+            row = 4
+            for hour in range(1, 6):
+                sheet.cell(row=row, column=1, value=f"{hour}시")
+                sheet.cell(row=row, column=2, value=hour)
+                sheet.cell(row=row, column=3, value=hour * 10)
+                row += 1
+            sheet.cell(row=row, column=1, value="*각주")
+            row += 1
+            sheet.cell(row=row, column=1, value="일사용량 (TON)")
+            sheet.cell(row=row, column=3, value=ton)
+            row += 1
+            sheet.cell(row=row, column=1, value="일사용량 (N/M3)")
+            sheet.cell(row=row, column=3, value=nm3)
+            wb.save(os.path.join(flow_dir, f"유량계 관련_202608{day:02d}.xlsx"))
+
+        def make_ahu(day: int, hours: float) -> None:
+            # 일부러 전혀 다른 양식: 시트 이름도 다르고 표가 B5 부터 시작한다.
+            wb = Workbook()
+            sheet = wb.active
+            sheet.title = "가동시간"
+            sheet["B2"] = f"2026년 8월 {day}일 공조기 가동시간"
+            sheet["B5"] = "구분"
+            sheet["C5"] = "AH-1 가동시간"
+            sheet["D5"] = "AH-2 가동시간"
+            sheet["B6"] = "0시"
+            sheet["C6"] = 0.1
+            sheet["D6"] = 0.0
+            sheet["B7"] = "1시"
+            sheet["C7"] = 1.0
+            sheet["D7"] = 1.0
+            sheet["B8"] = "일합계"
+            sheet["C8"] = hours
+            sheet["D8"] = hours + 1
+            wb.save(os.path.join(ahu_dir, f"공조기 가동시간_202608{day:02d}.xlsx"))
+
+        for day, ton, nm3 in [(1, 137394, 8931), (2, 140000, 9000), (3, 135500, 8800)]:
+            make_flow(day, ton, nm3)
+        # 공조기는 3일치가 없다 -> 그 줄이 통째로 사라지면 안 된다.
+        for day, hours in [(1, 9.1), (2, 8.5)]:
+            make_ahu(day, hours)
+
+        sources = [
+            SourceSpec(
+                name="유량계",
+                folder=flow_dir,
+                spec=DailyRowSpec(row_indexes=[6, 7], row_labels=["TON", "N/M3"], columns=["전력"]),
+                options=ReadOptions(sheet_name="DailyReport", cell_range="A3:C11", auto_detect=False),
+            ),
+            SourceSpec(
+                name="공조기",
+                folder=ahu_dir,
+                spec=DailyRowSpec(row_indexes=[2], columns=["AH-1 가동시간", "AH-2 가동시간"]),
+                options=ReadOptions(sheet_name="가동시간", cell_range="B5:D8", auto_detect=False),
+            ),
+        ]
+        table, warnings = build_combined_monthly_table(sources)
+
+        expected_columns = [
+            "날짜",
+            "유량계 · 전력 (TON)",
+            "유량계 · 전력 (N/M3)",
+            "공조기 · AH-1 가동시간",
+            "공조기 · AH-2 가동시간",
+        ]
+        ok = table.columns == expected_columns and [tuple(r) for r in table.rows] == [
+            (dt.date(2026, 8, 1), 137394, 8931, 9.1, 10.1),
+            (dt.date(2026, 8, 2), 140000, 9000, 8.5, 9.5),
+            (dt.date(2026, 8, 3), 135500, 8800, None, None),
+        ]
+        label1 = "양식이 다른 설비 2개를 날짜 기준으로 한 표에 나란히 합침 (컬럼에 설비 이름 접두)"
+        print(f"  {'OK  ' if ok else 'FAIL'} {label1}")
+        if not ok:
+            FAILURES.append(label1)
+            print(f"         -> columns={table.columns}, rows={table.rows}")
+
+        ok2 = any("공조기" in w and "없는 날짜" in w for w in warnings)
+        label2 = "한 설비에만 없는 날짜는 그 칸만 비우고, 어느 설비 며칠인지 경고로 남김"
+        print(f"  {'OK  ' if ok2 else 'FAIL'} {label2}")
+        if not ok2:
+            FAILURES.append(label2)
+            print(f"         -> warnings={warnings}")
+
+        saved = save_table_as_excel(table, os.path.join(tmp, "통합월간표.xlsx"))
+        reloaded = read_table(saved)
+        ok3 = reloaded.columns == expected_columns and reloaded.n_rows == 3
+        label3 = "합친 결과를 저장한 파일이 '1단계 원본 엑셀'로 그대로 다시 읽힘"
+        print(f"  {'OK  ' if ok3 else 'FAIL'} {label3}")
+        if not ok3:
+            FAILURES.append(label3)
+            print(f"         -> columns={reloaded.columns}, rows={reloaded.n_rows}")
+
+        # 설비 하나가 통째로 실패해도(폴더가 없음) 나머지는 살아야 한다.
+        broken = list(sources) + [
+            SourceSpec(
+                name="없는설비",
+                folder=os.path.join(tmp, "없는폴더"),
+                spec=DailyRowSpec(row_indexes=[0]),
+            )
+        ]
+        table2, warnings2 = build_combined_monthly_table(broken)
+        ok4 = table2.n_rows == 3 and any("없는설비" in w for w in warnings2)
+        label4 = "설비 하나가 실패해도 나머지 설비로 계속 진행하고 이유를 남김"
+        print(f"  {'OK  ' if ok4 else 'FAIL'} {label4}")
+        if not ok4:
+            FAILURES.append(label4)
+            print(f"         -> rows={table2.n_rows}, warnings={warnings2}")
+
+        # 설비 이름이 겹치면 컬럼이 섞이므로 미리 막아야 한다.
+        label5 = "설비 이름이 중복되면 오류로 바로 알려줌"
+        try:
+            build_combined_monthly_table([sources[0], sources[0]])
+        except ReportGenError as exc:
+            print(f"  OK   {label5}\n         -> {str(exc).splitlines()[0]}")
+        except BaseException as exc:  # noqa: BLE001
+            FAILURES.append(label5)
+            print(f"  FAIL {label5}: {type(exc).__name__} 이(가) 나옴 ({exc})")
+        else:
+            FAILURES.append(label5)
+            print(f"  FAIL {label5}: 오류가 나지 않음")
+
+
 def test_graceful_paths() -> None:
     """오류가 '나면 안 되는' 경우들."""
     print("\n[예외 없이 넘어가야 하는 경우]")
@@ -589,6 +747,7 @@ def main() -> int:
     test_table_block_detection()
     test_auto_generate()
     test_multifile_consolidation()
+    test_multifile_combined()
     test_graceful_paths()
     test_no_network()
     print()
